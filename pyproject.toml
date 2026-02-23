@@ -1,0 +1,71 @@
+[build-system]
+requires = [
+  "scikit-build-core>=0.10",
+  "nanobind>=2.0",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mlx-onnx"
+version = "0.30.7.1"
+description = "Standalone IR/ONNX export library for MLX"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Alex Skryl", email = "rut216@gmail.com" },
+  { name = "MLX ONNX Contributors" },
+]
+license = { file = "LICENSE" }
+keywords = ["mlx", "onnx", "ir", "export"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "invoke>=2.2",
+  "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/skryl/mlx-onnx"
+Repository = "https://github.com/skryl/mlx-onnx"
+Issues = "https://github.com/skryl/mlx-onnx/issues"
+
+[tool.scikit-build]
+wheel.packages = ["python/mlx_onnx"]
+install.components = ["python"]
+sdist.include = [
+  "CMakeLists.txt",
+  "LICENSE",
+  "README.md",
+  "include/**",
+  "src/**",
+  "python/**",
+  "mlx/CMakeLists.txt",
+  "mlx/LICENSE",
+  "mlx/ACKNOWLEDGMENTS.md",
+  "mlx/mlx.pc.in",
+  "mlx/cmake/**",
+  "mlx/mlx/**",
+]
+cmake.args = [
+  "-DMLX_ONNX_BUILD_PYTHON_BINDINGS=ON",
+  "-DMLX_ONNX_INSTALL_CPP_ARTIFACTS=OFF",
+  "-DCMAKE_C_COMPILER=/usr/bin/clang",
+  "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+  "python/tests",
+]

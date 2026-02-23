@@ -1,0 +1,6 @@
+[submodule "mlx"]
+	path = mlx
+	url = https://github.com/skryl/mlx
+[submodule "mlx-examples"]
+	path = mlx-examples
+	url = https://github.com/ml-explore/mlx-examples
