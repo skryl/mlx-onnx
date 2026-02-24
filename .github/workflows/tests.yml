@@ -27,14 +27,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Build native targets (CMake, clang)
-        env:
-          CC: clang
-          CXX: clang++
-        run: |
-          cmake -S . -B build-macos -DMLX_ONNX_BUILD_PYTHON_BINDINGS=ON -DMLX_ONNX_INSTALL_CPP_ARTIFACTS=OFF
-          cmake --build build-macos --parallel
-
       - name: Build wheel
         env:
           CC: clang
@@ -43,13 +35,10 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --wheel
 
-      - name: Install project for tests
-        env:
-          CC: clang
-          CXX: clang++
+      - name: Install built wheel for tests
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]"
+          WHEEL_PATH="$(ls dist/*.whl | head -n 1)"
+          python -m pip install "mlx-onnx[test] @ file://${PWD}/${WHEEL_PATH}"
 
       - name: Run macOS test suite
         run: python -m invoke test
@@ -81,13 +70,10 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --wheel
 
-      - name: Install project for tests
-        env:
-          CC: clang
-          CXX: clang++
+      - name: Install built wheel for tests
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test]"
+          WHEEL_PATH="$(ls dist/*.whl | head -n 1)"
+          python -m pip install "mlx-onnx[test] @ file://${PWD}/${WHEEL_PATH}"
 
       - name: Run Linux test suite
         run: |
