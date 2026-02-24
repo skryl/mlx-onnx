@@ -27,14 +27,14 @@ This document describes the native `mlx-onnx` architecture: how callbacks are ca
 
 ```mermaid
 flowchart TD
-  A[Python API call\nmlx_onnx.export_onnx(...)] --> B[python/src/onnx.cpp\nvalidate inputs + wrap callable]
-  B --> C[src/export.cpp\nexport_ir_payload via mx::export_function]
-  C --> D[IR JSON payload\ninputs/keyword_inputs/constants/nodes/outputs]
-  D --> E[src/lowering.cpp\nir_to_onnx_json_payload]
-  E --> F[ONNX stub JSON\nformat=onnx_stub_v1]
-  F --> G[src/onnx.cpp\nbuild_onnx_binary_artifact_from_stub]
-  G --> H[src/io.cpp\nwrite_onnx_binary_artifact_to_path]
-  H --> I[model.onnx (+ optional .data)]
+  A["Python API call<br/>mlx_onnx.export_onnx(...)"] --> B["python/src/onnx.cpp<br/>validate inputs + wrap callable"]
+  B --> C["src/export.cpp<br/>export_ir_payload via mx::export_function"]
+  C --> D["IR JSON payload<br/>inputs/keyword_inputs/constants/nodes/outputs"]
+  D --> E["src/lowering.cpp<br/>ir_to_onnx_json_payload"]
+  E --> F["ONNX stub JSON<br/>format=onnx_stub_v1"]
+  F --> G["src/onnx.cpp<br/>build_onnx_binary_artifact_from_stub"]
+  G --> H["src/io.cpp<br/>write_onnx_binary_artifact_to_path"]
+  H --> I["model.onnx (+ optional .data)"]
 ```
 
 ## API Call Chains
