@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mlx-onnx"
-version = "0.30.7.1"
+version = "0.30.7.2"
 description = "Standalone IR/ONNX export library for MLX"
 readme = "README.md"
 requires-python = ">=3.10"
