@@ -114,11 +114,6 @@ if(MLX_ONNX_BUILD_PYTHON_BINDINGS)
       FILES ${CMAKE_CURRENT_BINARY_DIR}/mlx/mlx/backend/metal/kernels/mlx.metallib
       DESTINATION mlx
       COMPONENT python)
-    # mlx_onnx._core also links MLX and must resolve the same metallib at runtime.
-    install(
-      FILES ${CMAKE_CURRENT_BINARY_DIR}/mlx/mlx/backend/metal/kernels/mlx.metallib
-      DESTINATION mlx_onnx
-      COMPONENT python)
   endif()
   install(
     DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mlx/python/mlx/
