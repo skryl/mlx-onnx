@@ -273,10 +273,16 @@ def _build_cvae():
 
 
 def _build_encodec():
-    _load_module(
-        "_mlx_examples_encodec",
-        EXAMPLES_ROOT / "encodec" / "encodec.py",
-    )
+    try:
+        _load_module(
+            "_mlx_examples_encodec",
+            EXAMPLES_ROOT / "encodec" / "encodec.py",
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "No Metal back-end" in message:
+            pytest.skip("encodec example requires MLX Metal backend")
+        raise
     model = nn.Identity()
     x = mx.random.normal((1, 8, 4))
     return model, (x,)
