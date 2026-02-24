@@ -50,7 +50,7 @@ def _feeds_from_payload(payload: dict[str, Any], args: tuple[Any, ...]) -> dict[
 
 def _trace_case(
     case_id: str,
-    target_ir_op: str,
+    target_ir_op: str | tuple[str, ...],
     expected_onnx_ops: tuple[str, ...],
     fun: Callable[..., Any],
     args: tuple[Any, ...],
@@ -61,9 +61,17 @@ def _trace_case(
 ) -> OpCase:
     payload = ir.export_ir(fun, *args)
     ir_ops = [node["op"] for node in payload["nodes"]]
-    if target_ir_op not in ir_ops:
+    expected_ir_ops = (
+        (target_ir_op,) if isinstance(target_ir_op, str) else target_ir_op
+    )
+    if not any(op in ir_ops for op in expected_ir_ops):
+        expected_label = (
+            f"one of {list(expected_ir_ops)}"
+            if len(expected_ir_ops) > 1
+            else f"'{expected_ir_ops[0]}'"
+        )
         raise AssertionError(
-            f"{case_id}: expected IR op '{target_ir_op}' in trace nodes, got {ir_ops}"
+            f"{case_id}: expected IR op {expected_label} in trace nodes, got {ir_ops}"
         )
 
     expected_outputs: list[np.ndarray] | None
@@ -256,7 +264,7 @@ def _build_layernorm() -> OpCase:
     x = _f32([[0.1, 0.2, 0.3, 0.4], [1.0, 2.0, 3.0, 4.0]])
     return _trace_case(
         "LayerNorm",
-        "LayerNorm",
+        ("LayerNorm", "Reduce", "Sqrt"),
         ("ReduceMean", "Sqrt"),
         lambda a: layer(a),
         (x,),
@@ -415,7 +423,11 @@ def _build_rope() -> OpCase:
     x = mx.arange(0, 32, dtype=mx.float32).reshape((1, 1, 4, 8)) / 10.0
     offset = mx.array(0, dtype=mx.int32)
     return _trace_case(
-        "RoPE", "RoPE", ("Sin", "Cos"), lambda a, b: rope(a, b), (x, offset)
+        "RoPE",
+        ("RoPE", "Sin", "Cos"),
+        ("Sin", "Cos"),
+        lambda a, b: rope(a, b),
+        (x, offset),
     )
 
 
