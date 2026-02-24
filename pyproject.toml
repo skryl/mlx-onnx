@@ -33,7 +33,14 @@ classifiers = [
 ]
 dependencies = [
   "invoke>=2.2",
+]
+
+[project.optional-dependencies]
+test = [
   "pytest>=8.0",
+  "numpy",
+  "onnx",
+  "onnxruntime",
 ]
 
 [project.urls]

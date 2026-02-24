@@ -167,6 +167,37 @@ def _eval_module_parameters(module):
         mx.eval(module.parameters())
 
 
+def _require_onnxruntime():
+    pytest.importorskip("numpy")
+    return pytest.importorskip("onnxruntime")
+
+
+def _to_numpy_outputs(value):
+    import numpy as np
+
+    if isinstance(value, (list, tuple)):
+        return [np.asarray(item) for item in value]
+    return [np.asarray(value)]
+
+
+def _assert_outputs_close(expected_outputs, actual_outputs):
+    import numpy as np
+
+    assert len(expected_outputs) == len(actual_outputs), (
+        f"output count mismatch: expected {len(expected_outputs)}, got {len(actual_outputs)}"
+    )
+    for expected, actual in zip(expected_outputs, actual_outputs):
+        expected_arr = np.asarray(expected)
+        actual_arr = np.asarray(actual)
+        if expected_arr.dtype == np.bool_ or np.issubdtype(expected_arr.dtype, np.integer):
+            np.testing.assert_array_equal(expected_arr, actual_arr)
+            continue
+        if expected_arr.dtype == np.float16:
+            np.testing.assert_allclose(expected_arr, actual_arr, rtol=5e-3, atol=5e-3)
+            continue
+        np.testing.assert_allclose(expected_arr, actual_arr, rtol=1e-3, atol=1e-4)
+
+
 def _build_bert():
     module = _load_module(
         "_mlx_examples_bert_model",
@@ -528,7 +559,13 @@ def test_examples_directory_coverage():
 
 @pytest.mark.parametrize("example_name", sorted(EXAMPLE_BUILDERS))
 def test_examples_export_to_onnx(example_name, tmp_path):
+    import numpy as np
+
     target, args = EXAMPLE_BUILDERS[example_name]()
+    expected_value = target(*args)
+    mx.eval(expected_value)
+    expected_outputs = _to_numpy_outputs(expected_value)
+
     onnx_path = tmp_path / f"{example_name}.onnx"
     ir.export_onnx(
         onnx_path,
@@ -539,3 +576,17 @@ def test_examples_export_to_onnx(example_name, tmp_path):
     )
     assert onnx_path.is_file()
     assert onnx_path.stat().st_size > 0
+
+    ort = _require_onnxruntime()
+    session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    session_inputs = session.get_inputs()
+    assert len(session_inputs) == len(args), (
+        f"input count mismatch for {example_name}: ONNX expects {len(session_inputs)} "
+        f"inputs, example builder returned {len(args)} args"
+    )
+    runtime_feeds = {
+        input_info.name: np.asarray(arg)
+        for input_info, arg in zip(session_inputs, args)
+    }
+    actual_outputs = session.run(None, runtime_feeds)
+    _assert_outputs_close(expected_outputs, actual_outputs)

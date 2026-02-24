@@ -276,7 +276,7 @@ Function signatures and semantics:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip build
-pip install -e .
+pip install -e ".[test]"
 ```
 
 ### Run tests
@@ -285,12 +285,7 @@ pip install -e .
 python -m unittest python/tests/test_ir.py
 ```
 
-Optional runtime parity dependencies (for ONNX/ONNX Runtime checks in the suite):
-
-```bash
-pip install onnx onnxruntime numpy
-python -m unittest python/tests/test_ir.py
-```
+The test extra includes ONNX parity dependencies (`numpy`, `onnx`, `onnxruntime`).
 
 ### Build package artifacts
 
