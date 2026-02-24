@@ -1,5 +1,6 @@
 # mlx-onnx
 
+[![Tests](https://github.com/skryl/mlx-onnx/actions/workflows/tests.yml/badge.svg)](https://github.com/skryl/mlx-onnx/actions/workflows/tests.yml)
 ![Version](https://img.shields.io/badge/version-0.30.7.1-blue)
 
 `mlx-onnx` is a standalone IR/ONNX export library for MLX. It provides a Python package (`mlx_onnx`) and a native C++ library (`mlx_onnx`) for:
