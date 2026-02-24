@@ -43,17 +43,33 @@ Example:
 import mlx.core as mx
 import mlx_onnx as mxonnx
 
-class MLP(mx.nn.Module):
-    def __call__(self, x):
-        ...
+W1 = mx.array([
+    [0.2, -0.1, 0.4, 0.0, 0.3, -0.2],
+    [-0.3, 0.5, 0.1, -0.4, 0.2, 0.1],
+    [0.6, 0.2, -0.5, 0.3, -0.1, 0.2],
+    [0.1, -0.2, 0.2, 0.5, 0.4, -0.3],
+], dtype=mx.float32)
+b1 = mx.array([0.1, -0.1, 0.05, 0.0, 0.2, -0.05], dtype=mx.float32)
 
-model = MLP()
-x = mx.array([1.0, 2.0, 3.0], dtype=mx.float32)
+W2 = mx.array([
+    [0.3, -0.4],
+    [0.1, 0.2],
+    [-0.2, 0.5],
+    [0.4, -0.1],
+    [0.2, 0.3],
+    [-0.5, 0.2],
+], dtype=mx.float32)
+b2 = mx.array([0.05, -0.02], dtype=mx.float32)
+
+def tiny_mlp(x):
+    h = mx.maximum(x @ W1 + b1, 0.0)
+    return h @ W2 + b2
 
 def forward(x):
-    return model(x)
+    return tiny_mlp(x)
 
-mxonnx.export_onnx("model.onnx", forward, x)
+x = mx.array([[1.0, -2.0, 0.5, 3.0]], dtype=mx.float32)
+mxonnx.export_onnx("tiny_mlp.onnx", forward, x, model_name="tiny_mlp", opset=18)
 ```
 
 You can also run a compatibility pre-check before writing the ONNX file:
