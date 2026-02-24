@@ -13,7 +13,7 @@ env:
   PYTHON_VERSION: "3.14"
 
 jobs:
-  test:
+  test-macos:
     runs-on: macos-14
 
     steps:
@@ -35,7 +35,15 @@ jobs:
           cmake -S . -B build-macos -DMLX_ONNX_BUILD_PYTHON_BINDINGS=ON -DMLX_ONNX_INSTALL_CPP_ARTIFACTS=OFF
           cmake --build build-macos --parallel
 
-      - name: Install project
+      - name: Build wheel
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install project for tests
         env:
           CC: clang
           CXX: clang++
@@ -43,10 +51,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test]"
 
-      - name: Run test suite
+      - name: Run macOS test suite
         run: python -m invoke test
 
-  build-linux:
+  test-linux:
     runs-on: ubuntu-latest
 
     steps:
@@ -72,3 +80,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel
+
+      - name: Install project for tests
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      - name: Run Linux test suite
+        run: |
+          python -m pytest python/tests -q --ignore=python/tests/test_examples.py
+          python -c "import sys, pytest, mlx.core as mx; mx.set_default_device(mx.cpu); sys.exit(pytest.main(['python/tests/test_examples.py', '-q']))"
