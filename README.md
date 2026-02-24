@@ -15,6 +15,7 @@
 - [C++ Interface](docs/cpp-interface.md)
 - [Native Architecture](docs/native-architecture.md)
 - [Supported MLX Ops](docs/supported-mlx-ops.md)
+- [ONNX WebGPU Demo](https://skryl.github.io/mlx-ruby/demo)
 
 ## Installation (pip)
 
