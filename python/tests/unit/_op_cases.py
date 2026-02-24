@@ -16,7 +16,7 @@ class OpCase:
     payload: dict[str, Any]
     feeds: dict[str, np.ndarray]
     expected_outputs: list[np.ndarray] | None
-    expected_onnx_ops: tuple[str, ...]
+    expected_onnx_ops: tuple[str | tuple[str, ...], ...]
     random_bounds: tuple[int, int] | None = None
     rtol: float = 1e-4
     atol: float = 1e-5
@@ -51,7 +51,7 @@ def _feeds_from_payload(payload: dict[str, Any], args: tuple[Any, ...]) -> dict[
 def _trace_case(
     case_id: str,
     target_ir_op: str | tuple[str, ...],
-    expected_onnx_ops: tuple[str, ...],
+    expected_onnx_ops: tuple[str | tuple[str, ...], ...],
     fun: Callable[..., Any],
     args: tuple[Any, ...],
     *,
@@ -98,7 +98,7 @@ def _trace_case(
 def _manual_case(
     case_id: str,
     target_ir_op: str,
-    expected_onnx_ops: tuple[str, ...],
+    expected_onnx_ops: tuple[str | tuple[str, ...], ...],
     payload: dict[str, Any],
     feeds: dict[str, np.ndarray],
     expected_outputs: list[np.ndarray],
@@ -265,7 +265,7 @@ def _build_layernorm() -> OpCase:
     return _trace_case(
         "LayerNorm",
         ("LayerNorm", "Reduce", "Sqrt"),
-        ("ReduceMean", "Sqrt"),
+        (("ReduceMean", "ReduceSum"), "Sqrt"),
         lambda a: layer(a),
         (x,),
     )

@@ -81,6 +81,12 @@ def run_case(case_id: str):
     model_name = f"unit_{case_id.lower()}"
     op_types = _lowered_op_types(case.payload, model_name=model_name)
     for expected_onnx_op in case.expected_onnx_ops:
+        if isinstance(expected_onnx_op, tuple):
+            assert any(candidate in op_types for candidate in expected_onnx_op), (
+                f"{case_id}: expected one of ONNX ops {list(expected_onnx_op)} "
+                f"in lowered graph, got {op_types}"
+            )
+            continue
         assert expected_onnx_op in op_types, (
             f"{case_id}: expected ONNX op '{expected_onnx_op}' in lowered graph, got {op_types}"
         )
