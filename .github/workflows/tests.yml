@@ -63,7 +63,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libopenblas-dev liblapack-dev
+          sudo apt-get install -y clang libopenblas-dev liblapack-dev liblapacke-dev
 
       - name: Build wheel
         env:
