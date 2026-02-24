@@ -13,6 +13,7 @@
 
 - [Python Interface](docs/python-interface.md)
 - [C++ Interface](docs/cpp-interface.md)
+- [Native Architecture](docs/native-architecture.md)
 - [Supported MLX Ops](docs/supported-mlx-ops.md)
 
 ## Installation (pip)
