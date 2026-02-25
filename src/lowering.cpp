@@ -4764,7 +4764,7 @@ std::vector<OrderedJson> lower_onnx_node_default(
         inferred_output_dtype);
   }
 
-  if (op == "Greater" || op == "Less") {
+  if (op == "Greater" || op == "GreaterEqual" || op == "Less") {
     const auto lhs_dtype = known_dtype_for(known_dtypes, inputs[0]);
     const auto rhs_dtype = known_dtype_for(known_dtypes, inputs[1]);
     const auto promoted_dtype = promote_binary_dtype(lhs_dtype, rhs_dtype);

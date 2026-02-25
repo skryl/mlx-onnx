@@ -44,7 +44,7 @@ std::optional<int> lookup_string_int_pair(
   return std::nullopt;
 }
 
-constexpr std::array<std::pair<const char*, const char*>, 54> kOnnxOpPairs = {{
+constexpr std::array<std::pair<const char*, const char*>, 55> kOnnxOpPairs = {{
     {"Add", "Add"},
     {"AddMM", "Gemm"},
     {"Subtract", "Sub"},
@@ -68,6 +68,7 @@ constexpr std::array<std::pair<const char*, const char*>, 54> kOnnxOpPairs = {{
     {"LayerNorm", "LayerNormalization"},
     {"Softmax", "Softmax"},
     {"Greater", "Greater"},
+    {"GreaterEqual", "GreaterOrEqual"},
     {"Less", "Less"},
     {"Equal", "Equal"},
     {"Select", "Where"},

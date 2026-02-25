@@ -284,6 +284,14 @@ def _build_greater() -> OpCase:
     return _trace_case("Greater", "Greater", ("Greater",), lambda a, b: a > b, (x, y))
 
 
+def _build_greater_equal() -> OpCase:
+    x = _f32([[1.0, 2.0], [3.0, 4.0]])
+    y = _f32([[0.5, 2.5], [3.5, 1.0]])
+    return _trace_case(
+        "GreaterEqual", "GreaterEqual", ("GreaterOrEqual",), lambda a, b: a >= b, (x, y)
+    )
+
+
 def _build_less() -> OpCase:
     x = _f32([[1.0, 2.0], [3.0, 4.0]])
     y = _f32([[0.5, 2.5], [3.5, 1.0]])
@@ -694,6 +702,7 @@ CASE_BUILDERS: dict[str, Callable[[], OpCase]] = {
     "LayerNorm": _build_layernorm,
     "Softmax": _build_softmax,
     "Greater": _build_greater,
+    "GreaterEqual": _build_greater_equal,
     "Less": _build_less,
     "Equal": _build_equal,
     "Select": _build_select,
