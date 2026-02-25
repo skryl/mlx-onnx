@@ -305,6 +305,16 @@ struct GatherStateArguments {
   Shape slice_sizes;
 };
 
+struct ArgPartitionArguments {
+  int64_t kth;
+  int64_t axis;
+};
+
+struct GatherMMArguments {
+  bool left_sorted;
+  bool right_sorted;
+};
+
 static std::optional<std::vector<int64_t>> transpose_perm_from_arguments(
     const OrderedJson& arguments) {
   // Transpose argument shape varies across traces; pick first valid int-vector.
@@ -401,6 +411,59 @@ static std::optional<GatherStateArguments> gather_state_from_arguments(
   std::ostringstream out;
   out << "[ir.lowering] unsupported Gather arguments " << arguments.dump()
       << "; expected [axis] or [axes, slice_sizes]";
+  throw std::runtime_error(out.str());
+}
+
+static std::optional<ArgPartitionArguments> argpartition_arguments(
+    const OrderedJson& arguments,
+    bool strict) {
+  if (arguments.is_array() && arguments.size() >= 2) {
+    try {
+      const auto kth =
+          normalized_integer_scalar(arguments.at(0), "ArgPartition kth");
+      const auto axis =
+          normalized_integer_scalar(arguments.at(1), "ArgPartition axis");
+      if (kth < 0) {
+        if (!strict) {
+          return std::nullopt;
+        }
+        std::ostringstream out;
+        out << "[ir.lowering] unsupported ArgPartition kth " << kth
+            << "; expected non-negative Integer";
+        throw std::runtime_error(out.str());
+      }
+      return ArgPartitionArguments{kth, axis};
+    } catch (const std::exception&) {
+      // Handled below.
+    }
+  }
+
+  if (!strict) {
+    return std::nullopt;
+  }
+
+  std::ostringstream out;
+  out << "[ir.lowering] unsupported ArgPartition arguments "
+      << arguments.dump() << "; expected [kth, axis]";
+  throw std::runtime_error(out.str());
+}
+
+static std::optional<GatherMMArguments> gathermm_arguments(
+    const OrderedJson& arguments,
+    bool strict) {
+  if (arguments.is_array() && arguments.size() >= 2 &&
+      arguments.at(0).is_boolean() && arguments.at(1).is_boolean()) {
+    return GatherMMArguments{
+        arguments.at(0).get<bool>(), arguments.at(1).get<bool>()};
+  }
+
+  if (!strict) {
+    return std::nullopt;
+  }
+
+  std::ostringstream out;
+  out << "[ir.lowering] unsupported GatherMM arguments "
+      << arguments.dump() << "; expected [left_sorted, right_sorted]";
   throw std::runtime_error(out.str());
 }
 
@@ -2327,6 +2390,18 @@ std::optional<std::string> onnx_op_type_for_node(
   }
   if (op == "ArgReduce") {
     return argreduce_onnx_op_type(arguments, strict);
+  }
+  if (op == "ArgPartition") {
+    if (!argpartition_arguments(arguments, strict).has_value()) {
+      return std::nullopt;
+    }
+    return std::string("TopK");
+  }
+  if (op == "GatherMM") {
+    if (!gathermm_arguments(arguments, strict).has_value()) {
+      return std::nullopt;
+    }
+    return std::string("MatMul");
   }
   if (op == "Flatten") {
     return flatten_onnx_op_type(arguments, strict, &node, known_shapes);
@@ -4383,6 +4458,231 @@ std::vector<OrderedJson> lower_onnx_node_default(
     }
   }
 
+  if (op == "GatherMM") {
+    if (inputs.size() != 4 || outputs.size() != 1) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported GatherMM arity: inputs="
+          << inputs.size() << ", outputs=" << outputs.size();
+      throw std::runtime_error(out.str());
+    }
+    // GatherMM state flags are currently optimization hints only.
+    (void)gathermm_arguments(arguments, true).value();
+
+    std::vector<OrderedJson> lowered;
+    const auto lhs_dtype_before = known_dtype_for(known_dtypes, inputs[0]);
+    const auto rhs_dtype_before = known_dtype_for(known_dtypes, inputs[1]);
+    const auto promoted_dtype =
+        promote_binary_dtype(lhs_dtype_before, rhs_dtype_before);
+    if (promoted_dtype.has_value()) {
+      auto [casted_inputs, cast_nodes] = cast_inputs_to_dtype(
+          node_index,
+          "GatherMM",
+          inputs,
+          promoted_dtype.value(),
+          known_shapes,
+          known_dtypes,
+          used_tensor_names,
+          std::optional<std::vector<size_t>>{{0, 1}});
+      inputs = std::move(casted_inputs);
+      lowered.insert(lowered.end(), cast_nodes.begin(), cast_nodes.end());
+    }
+
+    ensure_indices_input_is_int64(
+        node_index,
+        "GatherMMLhsCastIndices",
+        "gathermm_lhs_indices_cast",
+        inputs,
+        2,
+        lowered,
+        lowering);
+    ensure_indices_input_is_int64(
+        node_index,
+        "GatherMMRhsCastIndices",
+        "gathermm_rhs_indices_cast",
+        inputs,
+        3,
+        lowered,
+        lowering);
+
+    const Shape lhs_shape = require_known_static_shape_for_op(
+        known_shapes, "GatherMM", "lhs tensor", inputs[0]);
+    const Shape rhs_shape = require_known_static_shape_for_op(
+        known_shapes, "GatherMM", "rhs tensor", inputs[1]);
+    if (lhs_shape.size() < 2 || rhs_shape.size() < 2) {
+      throw std::runtime_error(
+          "[ir.lowering] unsupported GatherMM with rank < 2 input tensors");
+    }
+
+    const int64_t m = lhs_shape[lhs_shape.size() - 2];
+    const int64_t k = lhs_shape.back();
+    const int64_t rhs_k = rhs_shape[rhs_shape.size() - 2];
+    const int64_t n = rhs_shape.back();
+    if (k != rhs_k) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported GatherMM K mismatch: lhs "
+          << lhs_shape[lhs_shape.size() - 1] << " vs rhs "
+          << rhs_shape[rhs_shape.size() - 2];
+      throw std::runtime_error(out.str());
+    }
+
+    Shape lhs_indices_shape = require_known_static_shape_for_op(
+        known_shapes, "GatherMM", "lhs_indices", inputs[2]);
+    Shape rhs_indices_shape = require_known_static_shape_for_op(
+        known_shapes, "GatherMM", "rhs_indices", inputs[3]);
+    const auto broadcast_shape = infer_elementwise_output_shape(
+        std::optional<Shape>(lhs_indices_shape),
+        std::optional<Shape>(rhs_indices_shape));
+    if (!broadcast_shape.has_value()) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported GatherMM index broadcast: lhs "
+          << json_from_shape(lhs_indices_shape).dump() << " vs rhs "
+          << json_from_shape(rhs_indices_shape).dump();
+      throw std::runtime_error(out.str());
+    }
+
+    std::string lhs_indices_input = inputs[2];
+    std::string rhs_indices_input = inputs[3];
+    if (lhs_indices_shape != broadcast_shape.value() ||
+        rhs_indices_shape != broadcast_shape.value()) {
+      const auto broadcast_shape_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "gathermm_indices_broadcast_shape",
+          broadcast_shape.value());
+
+      if (lhs_indices_shape != broadcast_shape.value()) {
+        const auto lhs_broadcast = unique_aux_tensor_name(
+            used_tensor_names, node_index, "gathermm_lhs_indices_broadcast");
+        lowered.push_back(build_onnx_node_spec(
+            "node_" + std::to_string(node_index) + "_GatherMMLhsBroadcast",
+            "Expand",
+            {lhs_indices_input, broadcast_shape_name},
+            {lhs_broadcast},
+            OrderedJson::object()));
+        known_shapes[lhs_broadcast] = broadcast_shape.value();
+        if (const auto dtype = known_dtype_for(known_dtypes, lhs_indices_input);
+            dtype.has_value()) {
+          known_dtypes[lhs_broadcast] = dtype.value();
+        }
+        lhs_indices_input = lhs_broadcast;
+      }
+
+      if (rhs_indices_shape != broadcast_shape.value()) {
+        const auto rhs_broadcast = unique_aux_tensor_name(
+            used_tensor_names, node_index, "gathermm_rhs_indices_broadcast");
+        lowered.push_back(build_onnx_node_spec(
+            "node_" + std::to_string(node_index) + "_GatherMMRhsBroadcast",
+            "Expand",
+            {rhs_indices_input, broadcast_shape_name},
+            {rhs_broadcast},
+            OrderedJson::object()));
+        known_shapes[rhs_broadcast] = broadcast_shape.value();
+        if (const auto dtype = known_dtype_for(known_dtypes, rhs_indices_input);
+            dtype.has_value()) {
+          known_dtypes[rhs_broadcast] = dtype.value();
+        }
+        rhs_indices_input = rhs_broadcast;
+      }
+    }
+
+    const Shape lhs_batch_shape(lhs_shape.begin(), lhs_shape.end() - 2);
+    const Shape rhs_batch_shape(rhs_shape.begin(), rhs_shape.end() - 2);
+    const auto lhs_batch_size = tensor_size_from_shape(lhs_batch_shape);
+    const auto rhs_batch_size = tensor_size_from_shape(rhs_batch_shape);
+
+    const auto lhs_flat_shape_name = append_aux_int64_initializer(
+        initializers,
+        used_tensor_names,
+        node_index,
+        "gathermm_lhs_flat_shape",
+        {lhs_batch_size, m, k});
+    const auto rhs_flat_shape_name = append_aux_int64_initializer(
+        initializers,
+        used_tensor_names,
+        node_index,
+        "gathermm_rhs_flat_shape",
+        {rhs_batch_size, k, n});
+
+    const auto lhs_flat =
+        unique_aux_tensor_name(used_tensor_names, node_index, "gathermm_lhs_flat");
+    const auto rhs_flat =
+        unique_aux_tensor_name(used_tensor_names, node_index, "gathermm_rhs_flat");
+    const auto lhs_gather = unique_aux_tensor_name(
+        used_tensor_names, node_index, "gathermm_lhs_gather");
+    const auto rhs_gather = unique_aux_tensor_name(
+        used_tensor_names, node_index, "gathermm_rhs_gather");
+
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_GatherMMLhsFlatten",
+        "Reshape",
+        {inputs[0], lhs_flat_shape_name},
+        {lhs_flat},
+        OrderedJson::object()));
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_GatherMMRhsFlatten",
+        "Reshape",
+        {inputs[1], rhs_flat_shape_name},
+        {rhs_flat},
+        OrderedJson::object()));
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_GatherMMLhsGather",
+        "Gather",
+        {lhs_flat, lhs_indices_input},
+        {lhs_gather},
+        OrderedJson::object({{"axis", 0}})));
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_GatherMMRhsGather",
+        "Gather",
+        {rhs_flat, rhs_indices_input},
+        {rhs_gather},
+        OrderedJson::object({{"axis", 0}})));
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_GatherMMMatMul",
+        "MatMul",
+        {lhs_gather, rhs_gather},
+        outputs,
+        OrderedJson::object()));
+
+    known_shapes[lhs_flat] = {lhs_batch_size, m, k};
+    known_shapes[rhs_flat] = {rhs_batch_size, k, n};
+
+    Shape lhs_gather_shape = broadcast_shape.value();
+    lhs_gather_shape.push_back(m);
+    lhs_gather_shape.push_back(k);
+    known_shapes[lhs_gather] = lhs_gather_shape;
+
+    Shape rhs_gather_shape = broadcast_shape.value();
+    rhs_gather_shape.push_back(k);
+    rhs_gather_shape.push_back(n);
+    known_shapes[rhs_gather] = rhs_gather_shape;
+
+    Shape output_shape = broadcast_shape.value();
+    output_shape.push_back(m);
+    output_shape.push_back(n);
+    known_shapes[outputs[0]] = output_shape;
+
+    if (const auto lhs_dtype = known_dtype_for(known_dtypes, inputs[0]);
+        lhs_dtype.has_value()) {
+      known_dtypes[lhs_flat] = lhs_dtype.value();
+      known_dtypes[lhs_gather] = lhs_dtype.value();
+    }
+    if (const auto rhs_dtype = known_dtype_for(known_dtypes, inputs[1]);
+        rhs_dtype.has_value()) {
+      known_dtypes[rhs_flat] = rhs_dtype.value();
+      known_dtypes[rhs_gather] = rhs_dtype.value();
+    }
+
+    const auto output_dtype = promote_binary_dtype(
+        known_dtype_for(known_dtypes, inputs[0]),
+        known_dtype_for(known_dtypes, inputs[1]));
+    if (output_dtype.has_value()) {
+      known_dtypes[outputs[0]] = output_dtype.value();
+    }
+
+    return lowered;
+  }
+
   if (op == "LogSumExp") {
     const Shape input_shape = require_known_static_shape_for_op(
         known_shapes, "LogSumExp", "tensor", inputs[0]);
@@ -4658,6 +4958,78 @@ std::vector<OrderedJson> lower_onnx_node_default(
       }
     }
     inferred_output_dtype = known_dtype_for(known_dtypes, inputs[0]);
+  }
+
+  if (op == "ArgPartition") {
+    if (inputs.size() != 1 || outputs.size() != 1) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported ArgPartition arity: inputs="
+          << inputs.size() << ", outputs=" << outputs.size();
+      throw std::runtime_error(out.str());
+    }
+
+    const auto parsed = argpartition_arguments(arguments, true).value();
+    int64_t axis_value = parsed.axis;
+    const int64_t k_value = parsed.kth + 1;
+    if (k_value <= 0) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported ArgPartition kth " << parsed.kth
+          << "; computed TopK k must be positive";
+      throw std::runtime_error(out.str());
+    }
+
+    std::optional<Shape> topk_output_shape;
+    if (const auto input_shape = known_shape_for(known_shapes, inputs[0]);
+        input_shape.has_value()) {
+      const auto rank = input_shape->size();
+      const auto axis_index = normalize_axis(parsed.axis, rank, "ArgPartition axis");
+      const auto axis_dim = input_shape->at(static_cast<size_t>(axis_index));
+      if (parsed.kth >= axis_dim) {
+        std::ostringstream out;
+        out << "[ir.lowering] unsupported ArgPartition kth " << parsed.kth
+            << " for axis dim " << axis_dim;
+        throw std::runtime_error(out.str());
+      }
+      axis_value = axis_index;
+      Shape shape = input_shape.value();
+      shape[static_cast<size_t>(axis_index)] = k_value;
+      topk_output_shape = shape;
+    }
+
+    const auto k_name = append_aux_int64_initializer(
+        initializers, used_tensor_names, node_index, "argpartition_k", {k_value});
+    const auto topk_values = unique_aux_tensor_name(
+        used_tensor_names, node_index, "argpartition_values");
+    const auto topk_indices = unique_aux_tensor_name(
+        used_tensor_names, node_index, "argpartition_indices");
+
+    std::vector<OrderedJson> lowered;
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_ArgPartitionTopK",
+        "TopK",
+        {inputs[0], k_name},
+        {topk_values, topk_indices},
+        OrderedJson::object(
+            {{"axis", axis_value}, {"largest", 0}, {"sorted", 0}})));
+    lowered.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_ArgPartitionCast",
+        "Cast",
+        {topk_indices},
+        outputs,
+        OrderedJson::object({{"to", "UINT32"}})));
+
+    const auto input_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    if (topk_output_shape.has_value()) {
+      known_shapes[topk_values] = topk_output_shape.value();
+      known_shapes[topk_indices] = topk_output_shape.value();
+      known_shapes[outputs[0]] = topk_output_shape.value();
+    }
+    if (input_dtype.has_value()) {
+      known_dtypes[topk_values] = input_dtype.value();
+    }
+    known_dtypes[topk_indices] = "int64";
+    known_dtypes[outputs[0]] = "uint32";
+    return lowered;
   }
 
   if (op == "ArgReduce") {

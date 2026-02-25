@@ -35,6 +35,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `LayerNorm` | `LayerNormalization` |
 | `Softmax` | `Softmax` |
 | `Greater` | `Greater` |
+| `GreaterEqual` | `GreaterOrEqual` |
 | `Less` | `Less` |
 | `Equal` | `Equal` |
 | `Select` | `Where` |
@@ -49,6 +50,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `ExpandDims` | `Unsqueeze` |
 | `Broadcast` | `Expand` |
 | `Arange` | `Constant` |
+| `ArgPartition` | `TopK` (indices output cast to `uint32`) |
 | `AsStrided` | `Gather` |
 | `RoPE` | `Identity` |
 | `Concatenate` | `Concat` |
@@ -56,6 +58,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `ConvolutionTranspose` | `ConvTranspose` |
 | `Gather` | `Gather` |
 | `GatherAxis` | `GatherElements` |
+| `GatherMM` | `Reshape` + `Gather` + `MatMul` decomposition |
 | `Slice` | `Slice` |
 | `SliceUpdate` | `ScatterND` |
 | `Split` | `Split` |
@@ -92,5 +95,6 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 ## Important Lowering Notes
 
 - `Convolution` can lower to `ConvTranspose` when IR arguments indicate flipped convolution semantics (`flip=true`).
-- Some ops above are rewritten into multi-node ONNX subgraphs during lowering (for example `Flatten`, `Select`, `LayerNorm`, and `RoPE` paths).
+- Some ops above are rewritten into multi-node ONNX subgraphs during lowering (for example `Flatten`, `Select`, `LayerNorm`, `RoPE`, and `GatherMM` paths).
+- `ArgPartition` lowers to `TopK` with `k = kth + 1`, `largest = 0`, and `sorted = 0` (targeting top-k routing patterns).
 - Compatibility is validated per-node during report generation; unsupported argument combinations are surfaced as unsupported nodes.

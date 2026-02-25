@@ -401,6 +401,72 @@ def test_gatheraxis_expand_rewrite_contract_and_parity():
     _assert_close(expected, out[0])
 
 
+def test_argpartition_topk_rewrite_contract_and_parity():
+    x = mx.array([[0.2, -1.0, 3.0, 0.5], [2.0, 0.1, -0.4, 1.7]], dtype=mx.float32)
+    payload = ir.export_ir(
+        lambda a: mx.argpartition(a * -1.0, kth=1, axis=-1)[:, :2],
+        x,
+    )
+    stub = _stub(payload, model_name="contract_argpartition_topk")
+    nodes = _nodes(stub)
+    assert "TopK" in _op_types(stub)
+    topk = next(node for node in nodes if node["op_type"] == "TopK")
+    cast = next(node for node in nodes if node["op_type"] == "Cast")
+
+    assert topk["attributes"] == {"axis": 1, "largest": 0, "sorted": 0}
+    k_init = _initializers(stub)[topk["inputs"][1]]
+    assert k_init["dtype"] == "int64"
+    assert k_init["shape"] == [1]
+    assert k_init["values"] == [2]
+    assert cast["attributes"] == {"to": "UINT32"}
+
+    feeds = {payload["inputs"][0]["name"]: np.asarray(x)}
+    out = _run_ort(payload, feeds, model_name="parity_argpartition_topk")
+    expected = np.asarray(mx.argpartition(x * -1.0, kth=1, axis=-1)[:, :2])
+    np.testing.assert_array_equal(np.sort(expected, axis=-1), np.sort(out[0], axis=-1))
+
+
+def test_gathermm_rewrite_contract_and_parity():
+    x = mx.array(
+        [
+            [[1.0, 2.0, 3.0]],
+            [[4.0, 5.0, 6.0]],
+            [[7.0, 8.0, 9.0]],
+            [[2.0, 1.0, 0.5]],
+        ],
+        dtype=mx.float32,
+    )
+    w = mx.array(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0]],
+            [[0.5, 1.0], [1.5, -0.5], [0.0, 2.0]],
+        ],
+        dtype=mx.float32,
+    )
+    rhs = mx.array([0, 1, 0, 1], dtype=mx.uint32)
+
+    payload = ir.export_ir(lambda a, b, c: mx.gather_mm(a, b, rhs_indices=c), x, w, rhs)
+    stub = _stub(payload, model_name="contract_gathermm")
+    nodes = _nodes(stub)
+    op_types = [node["op_type"] for node in nodes]
+
+    assert op_types.count("Reshape") == 2
+    assert op_types.count("Gather") == 2
+    assert op_types[-1] == "MatMul"
+    assert any(node["op_type"] == "Cast" and node["attributes"] == {"to": "INT64"} for node in nodes)
+    for gather in [node for node in nodes if node["op_type"] == "Gather"]:
+        assert gather["attributes"] == {"axis": 0}
+
+    feeds = {
+        payload["inputs"][0]["name"]: np.asarray(x),
+        payload["inputs"][1]["name"]: np.asarray(w),
+        payload["inputs"][2]["name"]: np.asarray(rhs),
+    }
+    out = _run_ort(payload, feeds, model_name="parity_gathermm")
+    expected = np.asarray(mx.gather_mm(x, w, rhs_indices=rhs))
+    _assert_close(expected, out[0], atol=1e-4)
+
+
 def test_pad_constant_mode_contract_and_parity():
     case = build_case("Pad")
     stub = _stub(case.payload, model_name="contract_pad")

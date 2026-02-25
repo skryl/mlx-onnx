@@ -30,6 +30,10 @@ def _i32(data: Any) -> mx.array:
     return mx.array(data, dtype=mx.int32)
 
 
+def _u32(data: Any) -> mx.array:
+    return mx.array(data, dtype=mx.uint32)
+
+
 def _to_numpy_outputs(value: Any) -> list[np.ndarray]:
     if isinstance(value, (list, tuple)):
         return [np.asarray(item) for item in value]
@@ -678,6 +682,43 @@ def _build_argreduce_max() -> OpCase:
     )
 
 
+def _build_argpartition() -> OpCase:
+    x = _f32([[0.2, -1.0, 3.0, 0.5], [2.0, 0.1, -0.4, 1.7]])
+    top_k = 1
+    return _trace_case(
+        "ArgPartition",
+        "ArgPartition",
+        ("TopK",),
+        lambda a: mx.argpartition(a * -1.0, kth=top_k - 1, axis=-1)[:, :top_k],
+        (x,),
+    )
+
+
+def _build_gathermm() -> OpCase:
+    x = _f32(
+        [
+            [[1.0, 2.0, 3.0]],
+            [[4.0, 5.0, 6.0]],
+            [[7.0, 8.0, 9.0]],
+            [[2.0, 1.0, 0.5]],
+        ]
+    )
+    w = _f32(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0]],
+            [[0.5, 1.0], [1.5, -0.5], [0.0, 2.0]],
+        ]
+    )
+    rhs_indices = _u32([0, 1, 0, 1])
+    return _trace_case(
+        "GatherMM",
+        "GatherMM",
+        ("MatMul",),
+        lambda a, b, idx: mx.gather_mm(a, b, rhs_indices=idx),
+        (x, w, rhs_indices),
+    )
+
+
 CASE_BUILDERS: dict[str, Callable[[], OpCase]] = {
     "Add": _build_add,
     "AddMM": _build_addmm,
@@ -740,6 +781,8 @@ CASE_BUILDERS: dict[str, Callable[[], OpCase]] = {
     "ReduceMax": _build_reduce_max,
     "ArgReduceMin": _build_argreduce_min,
     "ArgReduceMax": _build_argreduce_max,
+    "ArgPartition": _build_argpartition,
+    "GatherMM": _build_gathermm,
 }
 
 
