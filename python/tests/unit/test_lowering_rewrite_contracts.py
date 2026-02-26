@@ -549,3 +549,316 @@ def test_where_greater_pattern_rewrite_contract_and_parity():
     out = _run_ort(payload, feeds, model_name="parity_where_pattern")
     expected = np.where(np.asarray(x) > 0, np.asarray(x), np.zeros_like(np.asarray(x)))
     _assert_close(expected, out[0])
+
+
+def test_expm1_rewrite_contract_and_parity():
+    case = build_case("Expm1")
+    stub = _stub(case.payload, model_name="contract_expm1")
+    assert _op_types(stub) == ["Exp", "Sub"]
+
+    sub_node = _nodes(stub)[1]
+    one_init = _initializers(stub)[sub_node["inputs"][1]]
+    assert one_init["dtype"] == "float32"
+    assert one_init["shape"] == [1]
+    assert one_init["values"] == [1.0]
+
+    out = _run_ort(case.payload, case.feeds, model_name="parity_expm1")
+    _assert_close(case.expected_outputs[0], out[0])
+
+
+def test_logaddexp_rewrite_contract_and_parity():
+    case = build_case("LogAddExp")
+    stub = _stub(case.payload, model_name="contract_logaddexp")
+    assert _op_types(stub) == ["Max", "Sub", "Sub", "Exp", "Exp", "Add", "Log", "Add"]
+
+    out = _run_ort(case.payload, case.feeds, model_name="parity_logaddexp")
+    _assert_close(case.expected_outputs[0], out[0])
+
+
+def test_less_equal_contract_and_parity():
+    case = build_case("LessEqual")
+    stub = _stub(case.payload, model_name="contract_less_equal")
+    assert _op_types(stub) == ["LessOrEqual"]
+
+    out = _run_ort(case.payload, case.feeds, model_name="parity_less_equal")
+    _assert_close(case.expected_outputs[0], out[0])
+
+
+def test_logical_and_cast_contract_and_parity():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "int32"},
+            {"name": "y", "shape": [2, 2], "dtype": "int32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "bool"}],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "LogicalAnd",
+                "inputs": ["x", "y"],
+                "outputs": ["z"],
+                "arguments": [],
+            }
+        ],
+    }
+    stub = _stub(payload, model_name="contract_logical_and_cast")
+    assert _op_types(stub) == ["Cast", "Cast", "And"]
+    assert _nodes(stub)[0]["attributes"] == {"to": "BOOL"}
+    assert _nodes(stub)[1]["attributes"] == {"to": "BOOL"}
+
+    x = np.asarray([[1, 0], [2, 3]], dtype=np.int32)
+    y = np.asarray([[1, 4], [0, 5]], dtype=np.int32)
+    out = _run_ort(payload, {"x": x, "y": y}, model_name="parity_logical_and_cast")
+    expected = np.logical_and(x, y)
+    _assert_close(expected, out[0])
+
+
+def test_bitwise_binary_shift_contract_and_parity():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "uint32"},
+            {"name": "y", "shape": [2, 2], "dtype": "uint32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "uint32"}],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "BitwiseBinary",
+                "inputs": ["x", "y"],
+                "outputs": ["z"],
+                "arguments": [3],
+            }
+        ],
+    }
+    stub = _stub(payload, model_name="contract_bitwise_shift")
+    assert _op_types(stub) == ["BitShift"]
+    assert _nodes(stub)[0]["attributes"] == {"direction": "LEFT"}
+
+    x = np.asarray([[1, 2], [3, 4]], dtype=np.uint32)
+    y = np.asarray([[1, 2], [0, 1]], dtype=np.uint32)
+    out = _run_ort(payload, {"x": x, "y": y}, model_name="parity_bitwise_shift")
+    expected = np.left_shift(x, y)
+    _assert_close(expected, out[0])
+
+
+def test_bitwise_binary_signed_shift_cast_contract_and_parity():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "int32"},
+            {"name": "y", "shape": [2, 2], "dtype": "int32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "int32"}],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "BitwiseBinary",
+                "inputs": ["x", "y"],
+                "outputs": ["z"],
+                "arguments": [4],
+            }
+        ],
+    }
+    stub = _stub(payload, model_name="contract_bitwise_signed_shift")
+    assert _op_types(stub) == ["Cast", "Cast", "BitShift", "Cast"]
+    assert _nodes(stub)[0]["attributes"] == {"to": "UINT32"}
+    assert _nodes(stub)[1]["attributes"] == {"to": "UINT32"}
+    assert _nodes(stub)[2]["attributes"] == {"direction": "RIGHT"}
+    assert _nodes(stub)[3]["attributes"] == {"to": "INT32"}
+
+    x = np.asarray([[16, 9], [8, 4]], dtype=np.int32)
+    y = np.asarray([[1, 2], [3, 1]], dtype=np.int32)
+    out = _run_ort(payload, {"x": x, "y": y}, model_name="parity_bitwise_signed_shift")
+    expected = np.right_shift(x, y)
+    _assert_close(expected, out[0])
+
+
+def test_compat_report_expm1_flatten_cascade_resolved():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [{"name": "x", "shape": [2, 3, 4], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 12], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [
+            {"op": "Expm1", "inputs": ["x"], "outputs": ["y"], "arguments": []},
+            {"op": "Flatten", "inputs": ["y"], "outputs": ["z"], "arguments": [1, 2]},
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+
+def test_compat_report_expm1_pad_cascade_resolved():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "float32"},
+            {"name": "c", "shape": [], "dtype": "float32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [4, 2], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [
+            {"op": "Expm1", "inputs": ["x"], "outputs": ["y"], "arguments": []},
+            {"op": "Pad", "inputs": ["y", "c"], "outputs": ["z"], "arguments": [[0], [1], [1]]},
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+
+def test_compat_report_expm1_split_cascade_resolved():
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [{"name": "x", "shape": [4, 2], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [
+            {"name": "a", "shape": [2, 2], "dtype": "float32"},
+            {"name": "b", "shape": [2, 2], "dtype": "float32"},
+        ],
+        "constants": [],
+        "nodes": [
+            {"op": "Expm1", "inputs": ["x"], "outputs": ["y"], "arguments": []},
+            {"op": "Split", "inputs": ["y"], "outputs": ["a", "b"], "arguments": [[2], 0]},
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+
+def test_flatten_dynamic_input_shape_contract_and_compat():
+    payload = {
+        "ir_version": 1,
+        "shapeless": True,
+        "inputs": [{"name": "x", "shape": [2, -1], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [-1], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [
+            {"op": "Split", "inputs": ["x"], "outputs": ["a", "b"], "arguments": [[1], 1]},
+            {"op": "Flatten", "inputs": ["b"], "outputs": ["z"], "arguments": [0, 1]},
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+    stub = _stub(payload, model_name="contract_flatten_dynamic_shape")
+    flatten_nodes = [node for node in _nodes(stub) if "_Flatten" in node["name"]]
+    assert [node["op_type"] for node in flatten_nodes] == [
+        "Shape",
+        "Slice",
+        "Slice",
+        "ReduceProd",
+        "Slice",
+        "Concat",
+        "Reshape",
+    ]
+
+
+def test_split_dynamic_equal_parts_contract_and_compat():
+    payload = {
+        "ir_version": 1,
+        "shapeless": True,
+        "inputs": [{"name": "x", "shape": [2, -1], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [
+            {"name": "a", "shape": [2, -1], "dtype": "float32"},
+            {"name": "b", "shape": [2, -1], "dtype": "float32"},
+            {"name": "c", "shape": [2, -1], "dtype": "float32"},
+        ],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "Split",
+                "inputs": ["x"],
+                "outputs": ["a", "b", "c"],
+                "arguments": [[3], 1],
+            },
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+    stub = _stub(payload, model_name="contract_split_dynamic_equal")
+    split = _nodes(stub)[0]
+    assert split["op_type"] == "Split"
+    assert split["attributes"] == {"axis": 1, "num_outputs": 3}
+    assert len(split["inputs"]) == 1
+
+
+def test_split_dynamic_boundaries_contract_and_compat():
+    payload = {
+        "ir_version": 1,
+        "shapeless": True,
+        "inputs": [{"name": "x", "shape": [2, -1], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [
+            {"name": "a", "shape": [2, 4], "dtype": "float32"},
+            {"name": "b", "shape": [2, 8], "dtype": "float32"},
+            {"name": "c", "shape": [2, -1], "dtype": "float32"},
+        ],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "Split",
+                "inputs": ["x"],
+                "outputs": ["a", "b", "c"],
+                "arguments": [[4, 12], 1],
+            },
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+    stub = _stub(payload, model_name="contract_split_dynamic_boundaries")
+    assert _op_types(stub) == ["Shape", "Gather", "Sub", "Concat", "Split"]
+    split = _nodes(stub)[-1]
+    assert split["attributes"] == {"axis": 1}
+    assert len(split["inputs"]) == 2
+
+
+def test_pad_dynamic_rank_without_constant_contract_and_compat():
+    payload = {
+        "ir_version": 1,
+        "shapeless": True,
+        "inputs": [{"name": "x", "shape": [2, -1], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [-1, -1], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [
+            {"op": "Split", "inputs": ["x"], "outputs": ["a", "b"], "arguments": [[1], 1]},
+            {
+                "op": "Pad",
+                "inputs": ["b"],
+                "outputs": ["z"],
+                "arguments": [[0, 1], [1, 0], [0, 2]],
+            },
+        ],
+    }
+    report = json.loads(ir.ir_compatibility_report_json(payload))
+    assert report["unsupported_nodes"] == 0
+    assert report["unsupported_ops"] == []
+
+    stub = _stub(payload, model_name="contract_pad_dynamic_rank")
+    pad = next(node for node in _nodes(stub) if node["op_type"] == "Pad")
+    assert pad["attributes"] == {"mode": "constant"}
+    assert len(pad["inputs"]) == 4
+    assert pad["inputs"][2] == ""

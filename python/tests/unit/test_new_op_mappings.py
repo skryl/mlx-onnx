@@ -134,3 +134,122 @@ def test_gathermm_mapping_supported_and_lowered():
     assert "Reshape" in op_types
     assert "Gather" in op_types
     assert "MatMul" in op_types
+
+
+def test_bitwise_binary_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "BitwiseBinary",
+            "inputs": ["x", "y"],
+            "outputs": ["z"],
+            "arguments": [0],
+        },
+        inputs=[
+            {"name": "x", "shape": [2, 2], "dtype": "uint32"},
+            {"name": "y", "shape": [2, 2], "dtype": "uint32"},
+        ],
+        outputs=[{"name": "z", "shape": [2, 2], "dtype": "uint32"}],
+    )
+
+    _assert_supported(payload, "BitwiseBinary")
+    op_types = _lowered_op_types(payload, model_name="unit_bitwise_binary")
+    assert "BitwiseAnd" in op_types
+
+
+def test_bitwise_binary_shift_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "BitwiseBinary",
+            "inputs": ["x", "y"],
+            "outputs": ["z"],
+            "arguments": [3],
+        },
+        inputs=[
+            {"name": "x", "shape": [2, 2], "dtype": "uint32"},
+            {"name": "y", "shape": [2, 2], "dtype": "uint32"},
+        ],
+        outputs=[{"name": "z", "shape": [2, 2], "dtype": "uint32"}],
+    )
+
+    _assert_supported(payload, "BitwiseBinary")
+    op_types = _lowered_op_types(payload, model_name="unit_bitwise_shift")
+    assert "BitShift" in op_types
+
+
+def test_expm1_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "Expm1",
+            "inputs": ["x"],
+            "outputs": ["y"],
+            "arguments": [],
+        },
+        inputs=[{"name": "x", "shape": [2, 2], "dtype": "float32"}],
+        outputs=[{"name": "y", "shape": [2, 2], "dtype": "float32"}],
+    )
+
+    _assert_supported(payload, "Expm1")
+    op_types = _lowered_op_types(payload, model_name="unit_expm1")
+    assert "Exp" in op_types
+    assert "Sub" in op_types
+
+
+def test_less_equal_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "LessEqual",
+            "inputs": ["x", "y"],
+            "outputs": ["z"],
+            "arguments": [],
+        },
+        inputs=[
+            {"name": "x", "shape": [2, 2], "dtype": "float32"},
+            {"name": "y", "shape": [2, 2], "dtype": "float32"},
+        ],
+        outputs=[{"name": "z", "shape": [2, 2], "dtype": "bool"}],
+    )
+
+    _assert_supported(payload, "LessEqual")
+    op_types = _lowered_op_types(payload, model_name="unit_less_equal")
+    assert "LessOrEqual" in op_types
+
+
+def test_logical_and_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "LogicalAnd",
+            "inputs": ["x", "y"],
+            "outputs": ["z"],
+            "arguments": [],
+        },
+        inputs=[
+            {"name": "x", "shape": [2, 2], "dtype": "bool"},
+            {"name": "y", "shape": [2, 2], "dtype": "bool"},
+        ],
+        outputs=[{"name": "z", "shape": [2, 2], "dtype": "bool"}],
+    )
+
+    _assert_supported(payload, "LogicalAnd")
+    op_types = _lowered_op_types(payload, model_name="unit_logical_and")
+    assert "And" in op_types
+
+
+def test_logaddexp_mapping_supported_and_lowered():
+    payload = _single_node_payload(
+        node={
+            "op": "LogAddExp",
+            "inputs": ["x", "y"],
+            "outputs": ["z"],
+            "arguments": [],
+        },
+        inputs=[
+            {"name": "x", "shape": [2, 2], "dtype": "float32"},
+            {"name": "y", "shape": [2, 2], "dtype": "float32"},
+        ],
+        outputs=[{"name": "z", "shape": [2, 2], "dtype": "float32"}],
+    )
+
+    _assert_supported(payload, "LogAddExp")
+    op_types = _lowered_op_types(payload, model_name="unit_logaddexp")
+    assert "Max" in op_types
+    assert "Log" in op_types

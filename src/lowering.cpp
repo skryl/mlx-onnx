@@ -891,6 +891,51 @@ static std::optional<std::string> promote_binary_dtype(
   return lhs_rank.value() >= rhs_rank.value() ? lhs : rhs;
 }
 
+static bool is_floating_dtype(const std::string& dtype) {
+  return dtype == "float16" || dtype == "float32" || dtype == "float64" ||
+      dtype == "bfloat16";
+}
+
+static bool is_integer_dtype(const std::string& dtype) {
+  return dtype == "uint8" || dtype == "uint16" || dtype == "uint32" ||
+      dtype == "uint64" || dtype == "int8" || dtype == "int16" ||
+      dtype == "int32" || dtype == "int64";
+}
+
+static bool is_unsigned_integer_dtype(const std::string& dtype) {
+  return dtype == "uint8" || dtype == "uint16" || dtype == "uint32" ||
+      dtype == "uint64";
+}
+
+static std::optional<std::string> unsigned_integer_partner_dtype(
+    const std::string& dtype) {
+  if (dtype == "int8") {
+    return std::string("uint8");
+  }
+  if (dtype == "int16") {
+    return std::string("uint16");
+  }
+  if (dtype == "int32") {
+    return std::string("uint32");
+  }
+  if (dtype == "int64") {
+    return std::string("uint64");
+  }
+  return std::nullopt;
+}
+
+static std::string at_least_float_dtype(
+    const std::optional<std::string>& dtype) {
+  const auto canonical = canonical_dtype(dtype);
+  if (!canonical.has_value()) {
+    return "float32";
+  }
+  if (is_floating_dtype(canonical.value())) {
+    return onnx_effective_dtype(canonical.value());
+  }
+  return "float32";
+}
+
 static int64_t normalize_slice_index(int64_t value, int64_t dim) {
   int64_t index = value;
   if (index < 0) {
@@ -1110,8 +1155,9 @@ static std::
     tuple<std::vector<int64_t>, std::vector<int64_t>, std::vector<int64_t>>
     pad_axes_and_sizes_from_arguments(
         const OrderedJson& arguments,
-        const Shape& input_shape) {
-  // IR Pad uses sparse axis specification; ONNX expects full-rank pads.
+        const std::optional<size_t>& rank) {
+  // IR Pad uses sparse axis specification. When rank is unknown we preserve
+  // explicit non-negative axes and defer shape validation to runtime.
   if (!(arguments.is_array() && arguments.size() >= 3)) {
     std::ostringstream out;
     out << "[ir.lowering] unsupported Pad arguments " << arguments.dump()
@@ -1138,11 +1184,22 @@ static std::
         "[ir.lowering] unsupported Pad with negative padding");
   }
 
-  const size_t rank = input_shape.size();
   std::vector<int64_t> normalized_axes;
   normalized_axes.reserve(axes.size());
-  for (const auto axis : axes) {
-    normalized_axes.push_back(normalize_axis(axis, rank, "Pad axis"));
+  if (rank.has_value()) {
+    for (const auto axis : axes) {
+      normalized_axes.push_back(normalize_axis(axis, rank.value(), "Pad axis"));
+    }
+  } else {
+    for (const auto axis : axes) {
+      if (axis < 0) {
+        std::ostringstream out;
+        out << "[ir.lowering] unsupported Pad axis " << axis
+            << " without known static rank";
+        throw std::runtime_error(out.str());
+      }
+      normalized_axes.push_back(axis);
+    }
   }
 
   std::set<int64_t> uniq(normalized_axes.begin(), normalized_axes.end());
@@ -1512,7 +1569,9 @@ static std::pair<int64_t, std::vector<int64_t>> split_axis_and_lengths(
   const int64_t dim = data_shape[static_cast<size_t>(axis_index)];
 
   std::vector<int64_t> lengths;
-  if (spec.size() == 1 && spec[0] == output_count) {
+  if (spec.size() == static_cast<size_t>(output_count - 1)) {
+    lengths = split_lengths_from_indices(spec, dim);
+  } else if (spec.size() == 1 && spec[0] == output_count) {
     const auto parts = spec[0];
     if (parts <= 0) {
       throw std::invalid_argument(
@@ -1528,8 +1587,6 @@ static std::pair<int64_t, std::vector<int64_t>> split_axis_and_lengths(
       throw std::runtime_error(out.str());
     }
     lengths.assign(static_cast<size_t>(parts), quotient);
-  } else if (spec.size() == static_cast<size_t>(output_count - 1)) {
-    lengths = split_lengths_from_indices(spec, dim);
   } else if (spec.size() == static_cast<size_t>(output_count)) {
     lengths = spec;
   } else {
@@ -1835,10 +1892,9 @@ static std::vector<int64_t> integer_vector_argument(
   throw std::invalid_argument(out.str());
 }
 
-static Shape flatten_shape_from_arguments(
+static std::pair<int64_t, int64_t> flatten_axis_range_from_arguments(
     const OrderedJson& arguments,
-    const Shape& input_shape) {
-  // IR Flatten semantics are implemented as Reshape with explicit target.
+    const std::optional<size_t>& rank) {
   if (!(arguments.is_array() && arguments.size() >= 2)) {
     std::ostringstream out;
     out << "[ir.lowering] unsupported Flatten arguments "
@@ -1846,25 +1902,52 @@ static Shape flatten_shape_from_arguments(
     throw std::runtime_error(out.str());
   }
 
+  const auto start_axis =
+      normalized_integer_scalar(arguments.at(0), "Flatten start_axis");
+  const auto end_axis =
+      normalized_integer_scalar(arguments.at(1), "Flatten end_axis");
+
+  if (rank.has_value()) {
+    const auto start_index =
+        normalize_axis(start_axis, rank.value(), "Flatten start_axis");
+    const auto end_index =
+        normalize_axis(end_axis, rank.value(), "Flatten end_axis");
+    if (end_index < start_index) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported Flatten axis range "
+          << arguments.dump() << " for rank " << rank.value();
+      throw std::runtime_error(out.str());
+    }
+    return {start_index, end_index};
+  }
+
+  if (start_axis < 0 || end_axis < 0) {
+    std::ostringstream out;
+    out << "[ir.lowering] unsupported Flatten negative axis range "
+        << arguments.dump() << " without known static rank";
+    throw std::runtime_error(out.str());
+  }
+  if (end_axis < start_axis) {
+    std::ostringstream out;
+    out << "[ir.lowering] unsupported Flatten axis range "
+        << arguments.dump();
+    throw std::runtime_error(out.str());
+  }
+  return {start_axis, end_axis};
+}
+
+static Shape flatten_shape_from_arguments(
+    const OrderedJson& arguments,
+    const Shape& input_shape) {
+  // IR Flatten semantics are implemented as Reshape with explicit target.
   const auto rank = input_shape.size();
   if (rank <= 0) {
     throw std::invalid_argument(
         "[ir.lowering] Flatten input shape must have rank >= 1");
   }
 
-  const auto start_axis =
-      normalized_integer_scalar(arguments.at(0), "Flatten start_axis");
-  const auto end_axis =
-      normalized_integer_scalar(arguments.at(1), "Flatten end_axis");
-  const auto start_index =
-      normalize_axis(start_axis, rank, "Flatten start_axis");
-  const auto end_index = normalize_axis(end_axis, rank, "Flatten end_axis");
-  if (end_index < start_index) {
-    std::ostringstream out;
-    out << "[ir.lowering] unsupported Flatten axis range "
-        << arguments.dump() << " for rank " << rank;
-    throw std::runtime_error(out.str());
-  }
+  const auto [start_index, end_index] =
+      flatten_axis_range_from_arguments(arguments, rank);
 
   Shape out;
   out.insert(out.end(), input_shape.begin(), input_shape.begin() + start_index);
@@ -2326,20 +2409,67 @@ static std::optional<std::string> flatten_onnx_op_type(
     }
     const auto input_name = inputs.front();
     const auto input_shape = known_shape_for(*known_shapes, input_name);
-    if (!input_shape.has_value()) {
-      if (!strict) {
-        return std::nullopt;
-      }
-      std::ostringstream out;
-      out << "[ir.lowering] unsupported Flatten for tensor " << input_name
-          << " without known static shape";
-      throw std::runtime_error(out.str());
+    if (input_shape.has_value()) {
+      flatten_shape_from_arguments(arguments, input_shape.value());
     }
-
-    flatten_shape_from_arguments(arguments, input_shape.value());
   }
 
   return onnx_op_name("Flatten");
+}
+
+struct BitwiseBinarySpec {
+  int64_t opcode;
+  std::string op_type;
+  OrderedJson attributes;
+  bool is_shift;
+};
+
+static std::optional<BitwiseBinarySpec> bitwise_binary_spec_from_arguments(
+    const OrderedJson& arguments,
+    bool strict) {
+  if (!(arguments.is_array() && !arguments.empty() &&
+        json_is_numeric(arguments.at(0)))) {
+    if (!strict) {
+      return std::nullopt;
+    }
+    std::ostringstream out;
+    out << "[ir.lowering] unsupported BitwiseBinary arguments "
+        << arguments.dump() << "; expected [op_code]";
+    throw std::runtime_error(out.str());
+  }
+
+  const auto opcode =
+      normalized_integer_scalar(arguments.at(0), "BitwiseBinary op_code");
+  if (opcode < 0 || opcode > 4) {
+    if (!strict) {
+      return std::nullopt;
+    }
+    std::ostringstream out;
+    out << "[ir.lowering] unsupported BitwiseBinary op_code " << opcode
+        << "; expected 0..4";
+    throw std::runtime_error(out.str());
+  }
+
+  BitwiseBinarySpec spec;
+  spec.opcode = opcode;
+  spec.attributes = OrderedJson::object();
+  spec.is_shift = opcode == 3 || opcode == 4;
+
+  if (opcode == 0) {
+    spec.op_type = "BitwiseAnd";
+  } else if (opcode == 1) {
+    spec.op_type = "BitwiseOr";
+  } else if (opcode == 2) {
+    spec.op_type = "BitwiseXor";
+  } else if (opcode == 3) {
+    spec.op_type = "BitShift";
+    spec.attributes["direction"] = "LEFT";
+  } else {
+    spec.op_type = "BitShift";
+    spec.attributes["direction"] = "RIGHT";
+  }
+
+  return spec;
 }
 
 static std::optional<std::string> convolution_onnx_op_type(
@@ -2402,6 +2532,19 @@ std::optional<std::string> onnx_op_type_for_node(
       return std::nullopt;
     }
     return std::string("MatMul");
+  }
+  if (op == "BitwiseBinary") {
+    const auto parsed = bitwise_binary_spec_from_arguments(arguments, strict);
+    if (!parsed.has_value()) {
+      return std::nullopt;
+    }
+    return parsed->op_type;
+  }
+  if (op == "Expm1") {
+    return std::string("Exp");
+  }
+  if (op == "LogAddExp") {
+    return std::string("Max");
   }
   if (op == "Flatten") {
     return flatten_onnx_op_type(arguments, strict, &node, known_shapes);
@@ -2885,6 +3028,305 @@ std::vector<OrderedJson> lower_onnx_node_default(
     attributes["high"] = parsed.high;
     inferred_output_shape = parsed.shape;
     inferred_output_dtype = parsed.dtype;
+  } else if (op == "Expm1") {
+    if (inputs.size() != 1 || outputs.size() != 1) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported Expm1 arity: inputs=" << inputs.size()
+          << ", outputs=" << outputs.size();
+      throw std::runtime_error(out.str());
+    }
+
+    const auto input_name = inputs.front();
+    const auto compute_dtype =
+        at_least_float_dtype(known_dtype_for(known_dtypes, input_name));
+
+    auto [casted_inputs, cast_nodes] = cast_inputs_to_dtype(
+        node_index,
+        "Expm1",
+        inputs,
+        compute_dtype,
+        known_shapes,
+        known_dtypes,
+        used_tensor_names,
+        std::optional<std::vector<size_t>>{{0}});
+    const auto exp_input = casted_inputs.front();
+
+    const auto one_name = append_aux_float_initializer(
+        initializers,
+        used_tensor_names,
+        node_index,
+        "expm1_one",
+        {1.0},
+        compute_dtype);
+    const auto exp_output = unique_aux_tensor_name(
+        used_tensor_names, node_index, "expm1_exp");
+
+    if (const auto input_shape = known_shape_for(known_shapes, input_name);
+        input_shape.has_value()) {
+      known_shapes[exp_output] = input_shape.value();
+      known_shapes[outputs.front()] = input_shape.value();
+    }
+    known_dtypes[exp_output] = compute_dtype;
+    known_dtypes[outputs.front()] = compute_dtype;
+
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_Expm1Exp",
+        "Exp",
+        {exp_input},
+        {exp_output},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_Expm1Sub",
+        "Sub",
+        {exp_output, one_name},
+        outputs,
+        OrderedJson::object()));
+    return cast_nodes;
+  } else if (op == "LogAddExp") {
+    if (inputs.size() != 2 || outputs.size() != 1) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported LogAddExp arity: inputs="
+          << inputs.size() << ", outputs=" << outputs.size();
+      throw std::runtime_error(out.str());
+    }
+
+    const auto lhs_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    const auto rhs_dtype = known_dtype_for(known_dtypes, inputs[1]);
+    const auto promoted_dtype = promote_binary_dtype(lhs_dtype, rhs_dtype);
+    const auto compute_dtype = at_least_float_dtype(promoted_dtype);
+
+    auto [casted_inputs, cast_nodes] = cast_inputs_to_dtype(
+        node_index,
+        "LogAddExp",
+        inputs,
+        compute_dtype,
+        known_shapes,
+        known_dtypes,
+        used_tensor_names);
+    const auto lhs = casted_inputs[0];
+    const auto rhs = casted_inputs[1];
+
+    const auto max_out = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_max");
+    const auto lhs_shifted = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_lhs_shifted");
+    const auto rhs_shifted = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_rhs_shifted");
+    const auto lhs_exp = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_lhs_exp");
+    const auto rhs_exp = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_rhs_exp");
+    const auto exp_sum = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_exp_sum");
+    const auto log_sum = unique_aux_tensor_name(
+        used_tensor_names, node_index, "logaddexp_log_sum");
+
+    if (const auto output_shape = infer_elementwise_output_shape(
+            known_shape_for(known_shapes, lhs),
+            known_shape_for(known_shapes, rhs));
+        output_shape.has_value()) {
+      known_shapes[max_out] = output_shape.value();
+      known_shapes[lhs_shifted] = output_shape.value();
+      known_shapes[rhs_shifted] = output_shape.value();
+      known_shapes[lhs_exp] = output_shape.value();
+      known_shapes[rhs_exp] = output_shape.value();
+      known_shapes[exp_sum] = output_shape.value();
+      known_shapes[log_sum] = output_shape.value();
+      known_shapes[outputs.front()] = output_shape.value();
+    }
+
+    known_dtypes[max_out] = compute_dtype;
+    known_dtypes[lhs_shifted] = compute_dtype;
+    known_dtypes[rhs_shifted] = compute_dtype;
+    known_dtypes[lhs_exp] = compute_dtype;
+    known_dtypes[rhs_exp] = compute_dtype;
+    known_dtypes[exp_sum] = compute_dtype;
+    known_dtypes[log_sum] = compute_dtype;
+    known_dtypes[outputs.front()] = compute_dtype;
+
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpMax",
+        "Max",
+        {lhs, rhs},
+        {max_out},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpSubLhs",
+        "Sub",
+        {lhs, max_out},
+        {lhs_shifted},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpSubRhs",
+        "Sub",
+        {rhs, max_out},
+        {rhs_shifted},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpExpLhs",
+        "Exp",
+        {lhs_shifted},
+        {lhs_exp},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpExpRhs",
+        "Exp",
+        {rhs_shifted},
+        {rhs_exp},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpAddExp",
+        "Add",
+        {lhs_exp, rhs_exp},
+        {exp_sum},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpLog",
+        "Log",
+        {exp_sum},
+        {log_sum},
+        OrderedJson::object()));
+    cast_nodes.push_back(build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_LogAddExpAddMax",
+        "Add",
+        {max_out, log_sum},
+        outputs,
+        OrderedJson::object()));
+    return cast_nodes;
+  } else if (op == "BitwiseBinary") {
+    if (inputs.size() != 2 || outputs.size() != 1) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported BitwiseBinary arity: inputs="
+          << inputs.size() << ", outputs=" << outputs.size();
+      throw std::runtime_error(out.str());
+    }
+
+    const auto spec = bitwise_binary_spec_from_arguments(arguments, true).value();
+    const auto lhs_dtype = canonical_dtype(known_dtype_for(known_dtypes, inputs[0]));
+    const auto rhs_dtype = canonical_dtype(known_dtype_for(known_dtypes, inputs[1]));
+    const auto promoted_dtype = canonical_dtype(promote_binary_dtype(lhs_dtype, rhs_dtype));
+
+    std::optional<std::string> target_dtype = promoted_dtype;
+    if (!target_dtype.has_value()) {
+      target_dtype = lhs_dtype.has_value() ? lhs_dtype : rhs_dtype;
+    }
+
+    std::string effective_op_type = spec.op_type;
+    OrderedJson effective_attributes = spec.attributes;
+
+    if (spec.is_shift) {
+      if (!target_dtype.has_value()) {
+        throw std::runtime_error(
+            "[ir.lowering] unsupported BitwiseBinary shift without known integer dtype");
+      }
+
+      std::string shift_compute_dtype;
+      if (is_unsigned_integer_dtype(target_dtype.value())) {
+        shift_compute_dtype = target_dtype.value();
+      } else if (target_dtype.value() == "bool") {
+        shift_compute_dtype = "uint8";
+      } else if (const auto mapped =
+                     unsigned_integer_partner_dtype(target_dtype.value());
+                 mapped.has_value()) {
+        shift_compute_dtype = mapped.value();
+      } else {
+        std::ostringstream out;
+        out << "[ir.lowering] unsupported BitwiseBinary shift dtype "
+            << target_dtype.value()
+            << "; expected integer or bool";
+        throw std::runtime_error(out.str());
+      }
+
+      auto [casted_inputs, cast_nodes] = cast_inputs_to_dtype(
+          node_index,
+          op,
+          inputs,
+          shift_compute_dtype,
+          known_shapes,
+          known_dtypes,
+          used_tensor_names);
+      inputs = std::move(casted_inputs);
+
+      const auto shift_output = (shift_compute_dtype == target_dtype.value())
+          ? outputs.front()
+          : unique_aux_tensor_name(
+                used_tensor_names, node_index, "bitwise_shift_output");
+      cast_nodes.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_" + effective_op_type,
+          effective_op_type,
+          inputs,
+          {shift_output},
+          effective_attributes));
+
+      const auto out_shape = infer_elementwise_output_shape(
+          known_shape_for(known_shapes, inputs[0]),
+          known_shape_for(known_shapes, inputs[1]));
+      if (out_shape.has_value()) {
+        known_shapes[shift_output] = out_shape.value();
+      }
+      known_dtypes[shift_output] = shift_compute_dtype;
+
+      if (shift_output != outputs.front()) {
+        cast_nodes.push_back(build_onnx_node_spec(
+            "node_" + std::to_string(node_index) + "_BitwiseBinaryCastOutput",
+            "Cast",
+            {shift_output},
+            outputs,
+            OrderedJson::object(
+                {{"to", onnx_dtype_symbol(target_dtype.value())}})));
+      }
+
+      inferred_output_shape = out_shape;
+      inferred_output_dtype = target_dtype;
+      return cast_nodes;
+    } else if (target_dtype.has_value() && target_dtype.value() == "bool") {
+      if (spec.opcode == 0) {
+        effective_op_type = "And";
+      } else if (spec.opcode == 1) {
+        effective_op_type = "Or";
+      } else if (spec.opcode == 2) {
+        effective_op_type = "Xor";
+      }
+      effective_attributes = OrderedJson::object();
+    } else if (target_dtype.has_value() && !is_integer_dtype(target_dtype.value())) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported BitwiseBinary dtype "
+          << target_dtype.value() << "; expected integer or bool";
+      throw std::runtime_error(out.str());
+    }
+
+    if (target_dtype.has_value()) {
+      if (const auto lowered = maybe_lower_with_promoted_cast(
+              node_index,
+              op,
+              effective_op_type,
+              inputs,
+              outputs,
+              effective_attributes,
+              target_dtype,
+              std::nullopt,
+              0,
+              1,
+              target_dtype,
+              lowering);
+          lowered.has_value()) {
+        return lowered.value();
+      }
+    }
+
+    inferred_output_shape = infer_elementwise_output_shape(
+        known_shape_for(known_shapes, inputs[0]),
+        known_shape_for(known_shapes, inputs[1]));
+    inferred_output_dtype = target_dtype.has_value()
+        ? target_dtype
+        : (lhs_dtype.has_value() ? lhs_dtype : rhs_dtype);
+
+    return {build_onnx_node_spec(
+        "node_" + std::to_string(node_index) + "_" + effective_op_type,
+        effective_op_type,
+        inputs,
+        outputs,
+        effective_attributes)};
   } else if (op == "ErfInv") {
     if (inputs.size() != 1 || outputs.size() != 1) {
       std::ostringstream out;
@@ -3429,8 +3871,8 @@ std::vector<OrderedJson> lower_onnx_node_default(
 
     const auto positions_shape = (offset_shape.has_value() &&
                                   offset_shape->size() == 1)
-        ? std::optional<Shape>({work_shape[0], 1, seq_len})
-        : std::optional<Shape>({seq_len});
+        ? std::optional<Shape>(Shape{work_shape[0], 1, seq_len})
+        : std::optional<Shape>(Shape{seq_len});
     if (positions_shape.has_value()) {
       known_shapes[positions_scaled] = positions_shape.value();
     }
@@ -4698,25 +5140,33 @@ std::vector<OrderedJson> lower_onnx_node_default(
   }
 
   if (op == "Pad") {
-    const Shape input_shape = require_known_static_shape_for_op(
-        known_shapes, "Pad", "tensor", inputs[0]);
-
+    const auto input_shape = known_shape_for(known_shapes, inputs[0]);
+    const std::optional<size_t> rank = input_shape.has_value()
+        ? std::optional<size_t>(input_shape->size())
+        : std::nullopt;
     const auto [axes, pad_low, pad_high] =
-        pad_axes_and_sizes_from_arguments(arguments, input_shape);
-    const auto rank = input_shape.size();
+        pad_axes_and_sizes_from_arguments(arguments, rank);
 
-    std::vector<int64_t> pads_begin(rank, 0);
-    std::vector<int64_t> pads_end(rank, 0);
-    for (size_t i = 0; i < axes.size(); ++i) {
-      const auto axis_index = normalize_axis(axes[i], rank, "Pad axis");
-      pads_begin[static_cast<size_t>(axis_index)] = pad_low[i];
-      pads_end[static_cast<size_t>(axis_index)] = pad_high[i];
+    bool canonical_axes = false;
+    if (rank.has_value() && axes.size() == rank.value()) {
+      canonical_axes = true;
+      for (size_t i = 0; i < axes.size(); ++i) {
+        if (axes[i] != static_cast<int64_t>(i)) {
+          canonical_axes = false;
+          break;
+        }
+      }
     }
 
-    std::vector<int64_t> pads = pads_begin;
-    pads.insert(pads.end(), pads_end.begin(), pads_end.end());
+    std::vector<int64_t> pads = pad_low;
+    pads.insert(pads.end(), pad_high.begin(), pad_high.end());
     const auto pads_name = append_aux_int64_initializer(
         initializers, used_tensor_names, node_index, "pads", pads);
+    std::optional<std::string> axes_name = std::nullopt;
+    if (!canonical_axes) {
+      axes_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "pad_axes", axes);
+    }
 
     if (!(inputs.size() >= 1 && inputs.size() <= 2)) {
       std::ostringstream out;
@@ -4728,12 +5178,29 @@ std::vector<OrderedJson> lower_onnx_node_default(
     std::vector<std::string> padded_inputs = {inputs.front(), pads_name};
     if (inputs.size() == 2) {
       padded_inputs.push_back(inputs[1]);
+    } else if (axes_name.has_value()) {
+      // ONNX optional input position for constant_value must be preserved
+      // when axes is provided.
+      padded_inputs.push_back("");
+    }
+    if (axes_name.has_value()) {
+      padded_inputs.push_back(axes_name.value());
     }
     inputs = std::move(padded_inputs);
 
     attributes["mode"] = "constant";
-    inferred_output_shape = infer_pad_output_shape(
-        std::optional<Shape>(input_shape), pads_begin, pads_end);
+    if (input_shape.has_value()) {
+      std::vector<int64_t> pads_begin(input_shape->size(), 0);
+      std::vector<int64_t> pads_end(input_shape->size(), 0);
+      for (size_t i = 0; i < axes.size(); ++i) {
+        const auto axis_index = normalize_axis(
+            axes[i], input_shape->size(), "Pad axis");
+        pads_begin[static_cast<size_t>(axis_index)] = pad_low[i];
+        pads_end[static_cast<size_t>(axis_index)] = pad_high[i];
+      }
+      inferred_output_shape = infer_pad_output_shape(
+          input_shape, pads_begin, pads_end);
+    }
     inferred_output_dtype = known_dtype_for(known_dtypes, inputs.front());
   }
 
@@ -4941,23 +5408,170 @@ std::vector<OrderedJson> lower_onnx_node_default(
   }
 
   if (op == "Split") {
-    const auto [axis, lengths] = split_axis_and_lengths(
-        arguments,
-        known_shape_for(known_shapes, inputs[0]),
-        static_cast<int64_t>(outputs.size()));
-    const auto split_name = append_aux_int64_initializer(
-        initializers, used_tensor_names, node_index, "split", lengths);
-    inputs.push_back(split_name);
-    attributes["axis"] = axis;
-
-    const auto split_shapes = infer_split_output_shapes(
-        known_shape_for(known_shapes, inputs[0]), axis, lengths);
-    if (split_shapes.has_value()) {
-      for (size_t i = 0; i < outputs.size(); ++i) {
-        known_shapes[outputs[i]] = split_shapes->at(i);
-      }
+    if (!(arguments.is_array() && arguments.size() >= 2)) {
+      throw std::invalid_argument(
+          "[ir.lowering] Split arguments must include split spec and axis");
     }
-    inferred_output_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    if (outputs.empty()) {
+      throw std::invalid_argument(
+          "[ir.lowering] Split must have at least one output");
+    }
+
+    const auto spec = normalize_integer_vector(arguments.at(0), "Split spec");
+    const auto axis_raw = normalized_integer_scalar(arguments.at(1), "Split axis");
+    const auto input_shape = known_shape_for(known_shapes, inputs[0]);
+
+    int64_t axis = axis_raw;
+    if (input_shape.has_value()) {
+      axis = normalize_axis(axis_raw, input_shape->size(), "Split axis");
+    } else if (axis_raw < 0) {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported Split axis " << axis_raw
+          << " without known static rank";
+      throw std::runtime_error(out.str());
+    }
+
+    const auto output_count = static_cast<int64_t>(outputs.size());
+    const bool has_static_axis_dim = input_shape.has_value() &&
+        input_shape->at(static_cast<size_t>(axis)) > 0;
+    if (has_static_axis_dim) {
+      const auto [resolved_axis, lengths] = split_axis_and_lengths(
+          arguments, input_shape, output_count);
+      const auto split_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "split", lengths);
+      inputs.push_back(split_name);
+      attributes["axis"] = resolved_axis;
+
+      const auto split_shapes = infer_split_output_shapes(
+          known_shape_for(known_shapes, inputs[0]), resolved_axis, lengths);
+      if (split_shapes.has_value()) {
+        for (size_t i = 0; i < outputs.size(); ++i) {
+          known_shapes[outputs[i]] = split_shapes->at(i);
+        }
+      }
+      inferred_output_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    } else if (spec.size() == static_cast<size_t>(output_count - 1)) {
+      // Split boundaries can be lowered dynamically when the input axis dim
+      // is unknown by deriving the final chunk from runtime Shape.
+      int64_t previous = 0;
+      std::vector<std::string> length_inputs;
+      length_inputs.reserve(spec.size() + 1);
+      for (const auto boundary : spec) {
+        if (boundary < 0) {
+          throw std::invalid_argument(
+              "[ir.lowering] Split boundaries must be non-negative when axis dim is unknown");
+        }
+        if (boundary < previous) {
+          std::ostringstream out;
+          out << "[ir.lowering] Split boundary " << boundary
+              << " is not non-decreasing";
+          throw std::invalid_argument(out.str());
+        }
+        const auto piece_name = append_aux_int64_initializer(
+            initializers,
+            used_tensor_names,
+            node_index,
+            "split_piece",
+            {boundary - previous});
+        length_inputs.push_back(piece_name);
+        previous = boundary;
+      }
+
+      const auto shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "split_shape");
+      const auto axis_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "split_axis_index", {axis});
+      const auto axis_dim_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "split_axis_dim");
+      const auto last_boundary_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "split_last_boundary", {previous});
+      const auto last_length_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "split_last_length");
+      const auto split_lengths_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "split_lengths");
+
+      std::vector<OrderedJson> lowered;
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_SplitShape",
+          "Shape",
+          {inputs[0]},
+          {shape_name},
+          OrderedJson::object()));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_SplitAxisDim",
+          "Gather",
+          {shape_name, axis_name},
+          {axis_dim_name},
+          OrderedJson::object({{"axis", 0}})));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_SplitLastLength",
+          "Sub",
+          {axis_dim_name, last_boundary_name},
+          {last_length_name},
+          OrderedJson::object()));
+
+      length_inputs.push_back(last_length_name);
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_SplitConcatLengths",
+          "Concat",
+          length_inputs,
+          {split_lengths_name},
+          OrderedJson::object({{"axis", 0}})));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_Split",
+          "Split",
+          {inputs[0], split_lengths_name},
+          outputs,
+          OrderedJson::object({{"axis", axis}})));
+
+      if (input_shape.has_value()) {
+        known_shapes[shape_name] = {static_cast<int64_t>(input_shape->size())};
+      }
+      known_dtypes[shape_name] = "int64";
+      known_shapes[axis_dim_name] = {1};
+      known_dtypes[axis_dim_name] = "int64";
+      known_shapes[last_length_name] = {1};
+      known_dtypes[last_length_name] = "int64";
+      known_shapes[split_lengths_name] = {output_count};
+      known_dtypes[split_lengths_name] = "int64";
+
+      if (const auto input_dtype = known_dtype_for(known_dtypes, inputs[0]);
+          input_dtype.has_value()) {
+        for (const auto& name : outputs) {
+          known_dtypes[name] = input_dtype.value();
+        }
+      }
+
+      return lowered;
+    } else if (spec.size() == 1 && spec[0] == output_count) {
+      attributes["axis"] = axis;
+      attributes["num_outputs"] = output_count;
+      inferred_output_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    } else if (spec.size() == static_cast<size_t>(output_count)) {
+      if (std::any_of(spec.begin(), spec.end(), [](int64_t value) {
+            return value < 0;
+          })) {
+        throw std::invalid_argument(
+            "[ir.lowering] Split lengths must be non-negative");
+      }
+      const auto split_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "split", spec);
+      inputs.push_back(split_name);
+      attributes["axis"] = axis;
+      const auto split_shapes = infer_split_output_shapes(input_shape, axis, spec);
+      if (split_shapes.has_value()) {
+        for (size_t i = 0; i < outputs.size(); ++i) {
+          known_shapes[outputs[i]] = split_shapes->at(i);
+        }
+      }
+      inferred_output_dtype = known_dtype_for(known_dtypes, inputs[0]);
+    } else {
+      std::ostringstream out;
+      out << "[ir.lowering] unsupported Split spec "
+          << json_from_int_vector(spec).dump() << " for " << output_count
+          << " outputs";
+      throw std::runtime_error(out.str());
+    }
   }
 
   if (op == "ArgPartition") {
@@ -5136,7 +5750,9 @@ std::vector<OrderedJson> lower_onnx_node_default(
         inferred_output_dtype);
   }
 
-  if (op == "Greater" || op == "GreaterEqual" || op == "Less") {
+  if (
+      op == "Greater" || op == "GreaterEqual" || op == "Less" ||
+      op == "LessEqual") {
     const auto lhs_dtype = known_dtype_for(known_dtypes, inputs[0]);
     const auto rhs_dtype = known_dtype_for(known_dtypes, inputs[1]);
     const auto promoted_dtype = promote_binary_dtype(lhs_dtype, rhs_dtype);
@@ -5148,6 +5764,30 @@ std::vector<OrderedJson> lower_onnx_node_default(
             outputs,
             attributes,
             promoted_dtype,
+            std::nullopt,
+            0,
+            1,
+            std::optional<std::string>("bool"),
+            lowering);
+        lowered.has_value()) {
+      return lowered.value();
+    }
+
+    inferred_output_shape = infer_elementwise_output_shape(
+        known_shape_for(known_shapes, inputs[0]),
+        known_shape_for(known_shapes, inputs[1]));
+    inferred_output_dtype = "bool";
+  }
+
+  if (op == "LogicalAnd") {
+    if (const auto lowered = maybe_lower_with_promoted_cast(
+            node_index,
+            op,
+            op_type,
+            inputs,
+            outputs,
+            attributes,
+            std::optional<std::string>("bool"),
             std::nullopt,
             0,
             1,
@@ -5248,14 +5888,149 @@ std::vector<OrderedJson> lower_onnx_node_default(
 
   if (op == "Flatten") {
     const auto flatten_input = inputs.front();
-    const Shape input_shape = require_known_static_shape_for_op(
-        known_shapes, "Flatten", "tensor", flatten_input);
-    const auto shape = flatten_shape_from_arguments(arguments, input_shape);
-    const auto shape_name = append_aux_int64_initializer(
-        initializers, used_tensor_names, node_index, "shape", shape);
-    inputs.push_back(shape_name);
-    inferred_output_shape = shape;
-    inferred_output_dtype = known_dtype_for(known_dtypes, flatten_input);
+    const auto input_shape = known_shape_for(known_shapes, flatten_input);
+    if (input_shape.has_value()) {
+      const auto shape = flatten_shape_from_arguments(arguments, input_shape.value());
+      const auto shape_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "shape", shape);
+      inputs.push_back(shape_name);
+      inferred_output_shape = shape;
+      inferred_output_dtype = known_dtype_for(known_dtypes, flatten_input);
+    } else {
+      const auto [start_axis, end_axis] =
+          flatten_axis_range_from_arguments(arguments, std::nullopt);
+
+      std::vector<OrderedJson> lowered;
+      const auto input_dtype = known_dtype_for(known_dtypes, flatten_input);
+
+      const auto input_shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_input_shape");
+      const auto prefix_shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_prefix_shape");
+      const auto middle_shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_middle_shape");
+      const auto middle_prod_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_middle_prod");
+      const auto suffix_shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_suffix_shape");
+      const auto target_shape_name = unique_aux_tensor_name(
+          used_tensor_names, node_index, "flatten_target_shape");
+
+      const auto axis0_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "flatten_axis0", {0});
+      const auto steps1_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "flatten_steps1", {1});
+      const auto reduce_axes_name = append_aux_int64_initializer(
+          initializers, used_tensor_names, node_index, "flatten_reduce_axes", {0});
+
+      const auto prefix_starts_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_prefix_starts",
+          {0});
+      const auto prefix_ends_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_prefix_ends",
+          {start_axis});
+      const auto middle_starts_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_middle_starts",
+          {start_axis});
+      const auto middle_ends_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_middle_ends",
+          {end_axis + 1});
+      const auto suffix_starts_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_suffix_starts",
+          {end_axis + 1});
+      const auto suffix_ends_name = append_aux_int64_initializer(
+          initializers,
+          used_tensor_names,
+          node_index,
+          "flatten_suffix_ends",
+          {std::numeric_limits<int64_t>::max()});
+
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenShape",
+          "Shape",
+          {flatten_input},
+          {input_shape_name},
+          OrderedJson::object()));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenPrefix",
+          "Slice",
+          {input_shape_name,
+           prefix_starts_name,
+           prefix_ends_name,
+           axis0_name,
+           steps1_name},
+          {prefix_shape_name},
+          OrderedJson::object()));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenMiddle",
+          "Slice",
+          {input_shape_name,
+           middle_starts_name,
+           middle_ends_name,
+           axis0_name,
+           steps1_name},
+          {middle_shape_name},
+          OrderedJson::object()));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenReduceProd",
+          "ReduceProd",
+          {middle_shape_name, reduce_axes_name},
+          {middle_prod_name},
+          OrderedJson::object({{"keepdims", 1}})));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenSuffix",
+          "Slice",
+          {input_shape_name,
+           suffix_starts_name,
+           suffix_ends_name,
+           axis0_name,
+           steps1_name},
+          {suffix_shape_name},
+          OrderedJson::object()));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenTargetShape",
+          "Concat",
+          {prefix_shape_name, middle_prod_name, suffix_shape_name},
+          {target_shape_name},
+          OrderedJson::object({{"axis", 0}})));
+      lowered.push_back(build_onnx_node_spec(
+          "node_" + std::to_string(node_index) + "_FlattenReshape",
+          "Reshape",
+          {flatten_input, target_shape_name},
+          outputs,
+          OrderedJson::object()));
+
+      known_dtypes[input_shape_name] = "int64";
+      known_dtypes[prefix_shape_name] = "int64";
+      known_dtypes[middle_shape_name] = "int64";
+      known_dtypes[middle_prod_name] = "int64";
+      known_dtypes[suffix_shape_name] = "int64";
+      known_dtypes[target_shape_name] = "int64";
+      known_shapes[middle_prod_name] = {1};
+
+      if (input_dtype.has_value()) {
+        for (const auto& name : outputs) {
+          known_dtypes[name] = input_dtype.value();
+        }
+      }
+
+      return lowered;
+    }
   }
 
   if (op == "Unflatten") {

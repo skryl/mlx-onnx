@@ -20,6 +20,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `Divide` | `Div` |
 | `AsType` | `Cast` |
 | `Exp` | `Exp` |
+| `Expm1` | `Exp` + `Sub` decomposition |
 | `Log` | `Log` |
 | `Sin` | `Sin` |
 | `Cos` | `Cos` |
@@ -37,7 +38,9 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `Greater` | `Greater` |
 | `GreaterEqual` | `GreaterOrEqual` |
 | `Less` | `Less` |
+| `LessEqual` | `LessOrEqual` |
 | `Equal` | `Equal` |
+| `LogicalAnd` | `And` |
 | `Select` | `Where` |
 | `Full` | `Identity` |
 | `RandomBits` | `RandomUniform` |
@@ -49,6 +52,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `Squeeze` | `Squeeze` |
 | `ExpandDims` | `Unsqueeze` |
 | `Broadcast` | `Expand` |
+| `BitwiseBinary` | `BitwiseAnd` / `BitwiseOr` / `BitwiseXor` / `BitShift` |
 | `Arange` | `Constant` |
 | `ArgPartition` | `TopK` (indices output cast to `uint32`) |
 | `AsStrided` | `Gather` |
@@ -62,6 +66,7 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 | `Slice` | `Slice` |
 | `SliceUpdate` | `ScatterND` |
 | `Split` | `Split` |
+| `LogAddExp` | `Max` + `Sub` + `Exp` + `Add` + `Log` + `Add` decomposition |
 | `LogSumExp` | `ReduceLogSumExp` |
 | `Pad` | `Pad` |
 | `Scan` | `CumSum` |
@@ -97,4 +102,5 @@ Support is argument/shape/dtype dependent for some ops. For a concrete graph, us
 - `Convolution` can lower to `ConvTranspose` when IR arguments indicate flipped convolution semantics (`flip=true`).
 - Some ops above are rewritten into multi-node ONNX subgraphs during lowering (for example `Flatten`, `Select`, `LayerNorm`, `RoPE`, and `GatherMM` paths).
 - `ArgPartition` lowers to `TopK` with `k = kth + 1`, `largest = 0`, and `sorted = 0` (targeting top-k routing patterns).
+- `BitwiseBinary` shift modes (`LeftShift`/`RightShift`) lower through unsigned compute dtypes and cast back to the promoted/output dtype.
 - Compatibility is validated per-node during report generation; unsupported argument combinations are surfaced as unsupported nodes.

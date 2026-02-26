@@ -44,7 +44,7 @@ std::optional<int> lookup_string_int_pair(
   return std::nullopt;
 }
 
-constexpr std::array<std::pair<const char*, const char*>, 55> kOnnxOpPairs = {{
+constexpr std::array<std::pair<const char*, const char*>, 57> kOnnxOpPairs = {{
     {"Add", "Add"},
     {"AddMM", "Gemm"},
     {"Subtract", "Sub"},
@@ -70,7 +70,9 @@ constexpr std::array<std::pair<const char*, const char*>, 55> kOnnxOpPairs = {{
     {"Greater", "Greater"},
     {"GreaterEqual", "GreaterOrEqual"},
     {"Less", "Less"},
+    {"LessEqual", "LessOrEqual"},
     {"Equal", "Equal"},
+    {"LogicalAnd", "And"},
     {"Select", "Where"},
     {"Full", "Identity"},
     {"RandomBits", "RandomUniform"},

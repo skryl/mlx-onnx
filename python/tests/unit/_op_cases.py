@@ -181,6 +181,21 @@ def _build_exp() -> OpCase:
     return _trace_case("Exp", "Exp", ("Exp",), lambda a: mx.exp(a), (x,))
 
 
+def _build_expm1() -> OpCase:
+    x = np.asarray([[0.0, 1.0], [2.0, -0.5]], dtype=np.float32)
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [{"name": "x", "shape": [2, 2], "dtype": "float32"}],
+        "keyword_inputs": [],
+        "outputs": [{"name": "y", "shape": [2, 2], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [{"op": "Expm1", "inputs": ["x"], "outputs": ["y"], "arguments": []}],
+    }
+    expected = [np.expm1(x)]
+    return _manual_case("Expm1", "Expm1", ("Exp", "Sub"), payload, {"x": x}, expected)
+
+
 def _build_log() -> OpCase:
     x = _f32([[1.0, 2.0], [3.0, 4.0]])
     return _trace_case("Log", "Log", ("Log",), lambda a: mx.log(a), (x,))
@@ -302,10 +317,111 @@ def _build_less() -> OpCase:
     return _trace_case("Less", "Less", ("Less",), lambda a, b: a < b, (x, y))
 
 
+def _build_less_equal() -> OpCase:
+    x = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    y = np.asarray([[0.5, 2.0], [4.0, 4.5]], dtype=np.float32)
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "float32"},
+            {"name": "y", "shape": [2, 2], "dtype": "float32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "bool"}],
+        "constants": [],
+        "nodes": [{"op": "LessEqual", "inputs": ["x", "y"], "outputs": ["z"], "arguments": []}],
+    }
+    expected = [np.less_equal(x, y)]
+    return _manual_case(
+        "LessEqual", "LessEqual", ("LessOrEqual",), payload, {"x": x, "y": y}, expected
+    )
+
+
 def _build_equal() -> OpCase:
     x = _f32([[1.0, 2.0], [3.0, 4.0]])
     y = _f32([[1.0, 2.5], [3.0, 0.0]])
     return _trace_case("Equal", "Equal", ("Equal",), lambda a, b: a == b, (x, y))
+
+
+def _build_logical_and() -> OpCase:
+    x = np.asarray([[True, False], [True, True]], dtype=bool)
+    y = np.asarray([[True, True], [False, True]], dtype=bool)
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "bool"},
+            {"name": "y", "shape": [2, 2], "dtype": "bool"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "bool"}],
+        "constants": [],
+        "nodes": [{"op": "LogicalAnd", "inputs": ["x", "y"], "outputs": ["z"], "arguments": []}],
+    }
+    expected = [np.logical_and(x, y)]
+    return _manual_case(
+        "LogicalAnd", "LogicalAnd", ("And",), payload, {"x": x, "y": y}, expected
+    )
+
+
+def _build_logaddexp() -> OpCase:
+    x = np.asarray([[1.0, -2.0], [3.0, 0.5]], dtype=np.float32)
+    y = np.asarray([[0.5, -1.0], [4.0, -3.0]], dtype=np.float32)
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "float32"},
+            {"name": "y", "shape": [2, 2], "dtype": "float32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "float32"}],
+        "constants": [],
+        "nodes": [{"op": "LogAddExp", "inputs": ["x", "y"], "outputs": ["z"], "arguments": []}],
+    }
+    expected = [np.logaddexp(x, y)]
+    return _manual_case(
+        "LogAddExp",
+        "LogAddExp",
+        ("Max", "Exp", "Log", "Add"),
+        payload,
+        {"x": x, "y": y},
+        expected,
+    )
+
+
+def _build_bitwise_binary() -> OpCase:
+    x = np.asarray([[1, 2], [3, 4]], dtype=np.uint32)
+    y = np.asarray([[7, 3], [1, 12]], dtype=np.uint32)
+    payload = {
+        "ir_version": 1,
+        "shapeless": False,
+        "inputs": [
+            {"name": "x", "shape": [2, 2], "dtype": "uint32"},
+            {"name": "y", "shape": [2, 2], "dtype": "uint32"},
+        ],
+        "keyword_inputs": [],
+        "outputs": [{"name": "z", "shape": [2, 2], "dtype": "uint32"}],
+        "constants": [],
+        "nodes": [
+            {
+                "op": "BitwiseBinary",
+                "inputs": ["x", "y"],
+                "outputs": ["z"],
+                "arguments": [0],
+            }
+        ],
+    }
+    expected = [np.bitwise_and(x, y)]
+    return _manual_case(
+        "BitwiseBinary",
+        "BitwiseBinary",
+        ("BitwiseAnd",),
+        payload,
+        {"x": x, "y": y},
+        expected,
+    )
 
 
 def _build_select() -> OpCase:
@@ -728,6 +844,7 @@ CASE_BUILDERS: dict[str, Callable[[], OpCase]] = {
     "Divide": _build_divide,
     "AsType": _build_astype,
     "Exp": _build_exp,
+    "Expm1": _build_expm1,
     "Log": _build_log,
     "Sin": _build_sin,
     "Cos": _build_cos,
@@ -745,7 +862,11 @@ CASE_BUILDERS: dict[str, Callable[[], OpCase]] = {
     "Greater": _build_greater,
     "GreaterEqual": _build_greater_equal,
     "Less": _build_less,
+    "LessEqual": _build_less_equal,
     "Equal": _build_equal,
+    "LogicalAnd": _build_logical_and,
+    "LogAddExp": _build_logaddexp,
+    "BitwiseBinary": _build_bitwise_binary,
     "Select": _build_select,
     "Full": _build_full,
     "RandomBits": _build_randombits,
