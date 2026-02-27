@@ -19,6 +19,19 @@
 
 ## Installation (pip)
 
+Install from PyPI (pre-built wheel currently targets macOS + Python 3.14):
+
+```bash
+pip install mlx-onnx
+```
+
+If you are on a different platform or Python version, force a source build via `pip`:
+
+```bash
+python -m pip install --upgrade pip build
+python -m pip install --no-binary mlx-onnx mlx-onnx
+```
+
 Install from source:
 
 ```bash
@@ -33,7 +46,7 @@ Install in editable mode for local development:
 pip install -e .
 ```
 
-Install from a wheel:
+Install from a local wheel:
 
 ```bash
 python -m build --wheel
